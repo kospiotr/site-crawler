@@ -29,6 +29,7 @@ IGNORE_PATTERNS = [
     r"logout",
     r"/private/",
     r"\?s=$",  # Ignore URLs ending with ?s=
+    r"#top",  # Ignore URLs ending with #top
     # Add more patterns as needed
 ]
 
