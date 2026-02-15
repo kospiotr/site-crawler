@@ -1,0 +1,16 @@
+zspzd-technikum.pl
+.venv
+.idea
+.DS_Store
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.sqlite3
+*.db
+*.env
+*.egg-info
+dist
+build
+*.egg
