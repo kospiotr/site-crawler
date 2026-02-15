@@ -74,9 +74,10 @@ class Sitemap(dict[str, SitemapEntry]):
 
             live.update(table)
 
-    def add_new(self, url):
+    def add_new(self, url, persist=True):
         self[url] = SitemapEntry(Status.NEW)
-        self.persist()
+        if persist:
+            self.persist()
 
     def add_downloaded(self, url: str, hash: str, path: str, mimetype: str):
         self[url] = SitemapEntry(Status.DOWNLOADED, hash, path, mimetype)

@@ -37,7 +37,7 @@ def matches_ignore_patterns(url: str) -> bool:
     return False
 
 
-def crawl(url: str, main_selector: str = "main"):
+def crawl_page(url: str, main_selector: str = "main"):
     try:
         r = requests.get(url, headers=HEADERS, timeout=20, allow_redirects=True)
         r.raise_for_status()
@@ -95,10 +95,13 @@ def crawl_pages(main_selector: str = "main"):
         to_process = site_map.get_new_entries()
         if not to_process:
             break
-        with tqdm(to_process, unit="page", ncols=100) as pbar:
-            for url in pbar:
-                pbar.set_description(f"Crawling [{iteration}]")
-                crawl(url, main_selector)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(crawl_page, url, main_selector): url for url in to_process}
+            with tqdm(total=len(futures), unit="page", ncols=100) as pbar:
+                for future in as_completed(futures):
+                    url = futures[future]
+                    pbar.set_description(f"Crawling [{iteration}] {url}")
+                    pbar.update(1)
     print('Crawling finished...')
 
 def collect_assets():
@@ -115,7 +118,7 @@ def collect_assets():
                     parsed = urlparse(asset_url)
                     ext = os.path.splitext(parsed.path)[1].lower()
                     if ext in ALLOWED_ASSETS_FILE_EXTENSIONS and asset_url not in site_map:
-                        assets_map.add_new(asset_url)
+                        assets_map.add_new(asset_url, False)
             # Extract directly linked assets from <a> tags
             for a in soup.find_all("a"):
                 href = a.get("href")
@@ -124,25 +127,36 @@ def collect_assets():
                     parsed = urlparse(asset_url)
                     ext = os.path.splitext(parsed.path)[1].lower()
                     if ext in ALLOWED_ASSETS_FILE_EXTENSIONS and asset_url not in site_map:
-                        assets_map.add_new(asset_url)
+                        assets_map.add_new(asset_url, False)
         except Exception as e:
             print(f"Error parsing {html_path}: {e}")
 
+    assets_map.persist()
+
+
 def download_assets():
-    for asset_url in tqdm(assets_map.get_new_entries(), desc="Downloading assets"):
-        try:
-            r = requests.get(asset_url, headers=HEADERS, timeout=20, stream=True)
-            r.raise_for_status()
-            content = r.content
-            checksum = hashlib.sha256(content).hexdigest()
-            ext = os.path.splitext(urlparse(asset_url).path)[1].lower()
-            file_name = f"{checksum}{ext}"
-            file_path = os.path.join(ASSETS_PATH, file_name)
-            with open(file_path, "wb") as f:
-                f.write(content)
-            assets_map.add_downloaded(asset_url, checksum, file_name, r.headers.get("Content-Type", ""))
-        except Exception as e:
-            assets_map.add_error(asset_url, e)
+    max_workers = 8  # You can adjust this number as needed
+    asset_urls = list(assets_map.get_new_entries())
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(download_asset, asset_url): asset_url for asset_url in asset_urls}
+        with tqdm(total=len(futures), desc="Downloading assets") as pbar:
+            for future in as_completed(futures):
+                pbar.update(1)
+
+def download_asset(asset_url):
+    try:
+        r = requests.get(asset_url, headers=HEADERS, timeout=20, stream=True)
+        r.raise_for_status()
+        content = r.content
+        checksum = hashlib.sha256(content).hexdigest()
+        ext = os.path.splitext(urlparse(asset_url).path)[1].lower()
+        file_name = f"{checksum}{ext}"
+        file_path = os.path.join(ASSETS_PATH, file_name)
+        with open(file_path, "wb") as f:
+            f.write(content)
+        assets_map.add_downloaded(asset_url, checksum, file_name, r.headers.get("Content-Type", ""))
+    except Exception as e:
+        assets_map.add_error(asset_url, e)
 
 if __name__ == "__main__":
     crawl_pages()
