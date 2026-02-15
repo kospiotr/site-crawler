@@ -97,7 +97,7 @@ def crawl_pages(main_selector: str = "main"):
             break
         with tqdm(to_process, unit="page", ncols=100) as pbar:
             for url in pbar:
-                pbar.set_description(f"Crawling [{iteration}] {url}")
+                pbar.set_description(f"Crawling [{iteration}]")
                 crawl(url, main_selector)
     print('Crawling finished...')
 
