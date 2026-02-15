@@ -22,7 +22,8 @@ HEADERS = {
     "User-Agent": "Crawler/1.0"
 }
 
-SITEMAP_CSV = os.path.join(OUTPUT_DIR, "sitemap.csv")
+SITEMAP_CSV = os.path.join(OUTPUT_DIR, "map.site.csv")
+ASSETSMAP_CSV = os.path.join(OUTPUT_DIR, "map.assets.csv")
 
 IGNORE_PATTERNS = [
     r"logout",
