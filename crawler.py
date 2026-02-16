@@ -7,6 +7,7 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from config import *
+from config import ASSETS_EXTENSIONS
 from sitemap import Sitemap
 
 for d in [ASSETS_PATH]:
@@ -27,7 +28,7 @@ domain = urlparse(START_URL).netloc
 
 def is_ignored_file(url: str) -> bool:
     path = urlparse(url).path.lower()
-    return any(path.endswith(ext) for ext in IGNORED_CRAWLING_EXTENSIONS)
+    return any(path.endswith(ext) for ext in ASSETS_EXTENSIONS)
 
 
 def matches_ignore_patterns(url: str) -> bool:
@@ -63,7 +64,8 @@ def crawl_page(url: str, main_selector: str = "main"):
             next_url = urljoin(final_url, href)
             parsed = urlparse(next_url)
             if is_internal(next_url) and parsed.scheme in ("http", "https"):
-                if is_ignored_file(next_url):
+                path = urlparse(next_url).path.lower()
+                if any(path.endswith(ext) for ext in ASSETS_EXTENSIONS):
                     continue
                 if matches_ignore_patterns(next_url):
                     if next_url not in site_map:
@@ -117,7 +119,7 @@ def collect_assets():
                     asset_url = urljoin(url, src)
                     parsed = urlparse(asset_url)
                     ext = os.path.splitext(parsed.path)[1].lower()
-                    if ext in ALLOWED_ASSETS_FILE_EXTENSIONS and asset_url not in site_map:
+                    if ext in ASSETS_EXTENSIONS and asset_url not in assets_map:
                         assets_map.add_new(asset_url, False)
             # Extract directly linked assets from <a> tags
             for a in soup.find_all("a"):
@@ -126,7 +128,7 @@ def collect_assets():
                     asset_url = urljoin(url, href)
                     parsed = urlparse(asset_url)
                     ext = os.path.splitext(parsed.path)[1].lower()
-                    if ext in ALLOWED_ASSETS_FILE_EXTENSIONS and asset_url not in site_map:
+                    if ext in ASSETS_EXTENSIONS and asset_url not in assets_map:
                         assets_map.add_new(asset_url, False)
         except Exception as e:
             print(f"Error parsing {html_path}: {e}")
