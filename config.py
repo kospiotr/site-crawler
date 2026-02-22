@@ -136,6 +136,9 @@ TRANSFORMED_IGNORED_URLS = [
     r"\/dla-absolwentow\/formularz-zgloszeniowy-na-zjazd-absolwentow\/$",
 ]
 
+
+TRANSFORMER_TITLE_ADJUSTER = lambda title: title.replace(' – Zespół Szkół Centrum Kształcenia Rolniczego  im. Jadwigi Dziubińskiej w Zduńskiej Dąbrowie','').strip()
+
 BROKEN_LINKS_MAP = {
     '../wp-content/': 'https://zspzd-technikum.pl/wp-content/'
 }
