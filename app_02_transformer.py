@@ -10,12 +10,13 @@ import os
 import re
 import sys
 from pathlib import Path
+import csv
 
 from tqdm import tqdm
 
 from config import INPUT_DIR, INPUT_ASSETS_PATH, INPUT_SITE_MAP_CSV, INPUT_ASSETS_MAP_CSV, \
     TRANSFORMED_IGNORED_ELEMENT_SELECTORS, BROKEN_LINKS_MAP, TRANSFORMED_IGNORED_URLS, TRANSFORMED_REMAP_URLS, \
-    TRANSFORMED_DIR, TRANSFORMED_ASSETS_DIR
+    TRANSFORMED_DIR, TRANSFORMED_ASSETS_DIR, IMPORTER_START_URL
 from app_01_importer import Sitemap
 
 
@@ -25,6 +26,7 @@ class Transformer:
     def __init__(self):
         self.site_map = Sitemap(INPUT_SITE_MAP_CSV, None)
         self.assets_map = Sitemap(INPUT_ASSETS_MAP_CSV, None)
+        self.broken_links = []
 
         self.url_to_md = {}
         for url, entry in tqdm(self.site_map.items(), desc="Building url to md map"):
@@ -38,8 +40,12 @@ class Transformer:
     @staticmethod
     def remap_url(url):
         for pattern, repl in TRANSFORMED_REMAP_URLS.items():
-            if re.search(pattern, url):
-                return re.sub(pattern, repl, url)
+            try:
+                if re.search(pattern, url):
+                    url = re.sub(pattern, repl, url)
+            except Exception as e:
+                print(f"Error processing URL: {url} for pattern: {pattern} and replacement: {repl}")
+                raise e
         return url
 
     def url_to_md_path(self, url, base_dir=TRANSFORMED_DIR):
@@ -79,14 +85,20 @@ class Transformer:
             # Convert asset links
             elif link in self.asset_to_local:
                 asset_name = self.asset_to_local[link]
-                asset_abs_path = os.path.join(TRANSFORMED_DIR, asset_name)
-                rel_path = self.get_relative_path(current_md_path, asset_abs_path)
-                tag[attr] = rel_path
+                asset_subfolder = os.path.dirname(current_md_path.replace(TRANSFORMED_DIR+'/',''))
+                dst_abs_path = os.path.join(TRANSFORMED_ASSETS_DIR, asset_subfolder, asset_name)
+                rel_path = self.get_relative_path(current_md_path, dst_abs_path)
+
                 src = os.path.join(INPUT_ASSETS_PATH, asset_name)
-                dst = os.path.join(TRANSFORMED_ASSETS_DIR, asset_name)
-                os.makedirs(os.path.dirname(dst), exist_ok=True)  # Ensure deep structure exists
+                os.makedirs(os.path.dirname(dst_abs_path), exist_ok=True)  # Ensure deep structure exists
                 if os.path.exists(src):
-                    shutil.copy2(src, dst)
+                    shutil.copy2(src, dst_abs_path)
+                    tag[attr] = rel_path
+                else:
+                    self.report_broken_link(src, dst_abs_path, current_md_path)
+            elif link.startswith(IMPORTER_START_URL):
+                self.report_broken_link(link, current_md_path, attr)
+
         return soup
 
 
@@ -104,15 +116,21 @@ class Transformer:
                 return True
         return False
 
-    def main(self):
-        self.create_build_workspace()
-
-        print('Process each downloaded page')
-        for url, entry in tqdm(self.site_map.items(), desc="Processing pages"):
+    def get_to_process_entries(self):
+        out = []
+        for url, entry in tqdm(self.site_map.items(), desc="Collecting pages"):
             if entry.status.name != "DOWNLOADED" or not entry.path:
                 continue
             if self.should_ignore_page(url):
                 continue
+            md_path = self.url_to_md[url]
+            out.append((url, entry, md_path))
+        return out
+
+
+    def main(self):
+        self.create_build_workspace()
+        for url, entry, md_path in tqdm(self.get_to_process_entries(), desc="Processing pages"):
             html_path = os.path.join(INPUT_ASSETS_PATH, entry.path)
             with open(html_path, "r", encoding="utf-8") as f:
                 soup = BeautifulSoup(f.read(), "html.parser")
@@ -122,7 +140,6 @@ class Transformer:
             if not main_elem:
                 continue
             # Convert links and assets
-            md_path = self.url_to_md[url]
             os.makedirs(os.path.dirname(md_path), exist_ok=True)
             main_elem = self.convert_links_and_assets(main_elem, md_path)
             # Markdownify
@@ -135,11 +152,23 @@ class Transformer:
             with open(md_path, "w", encoding="utf-8") as f:
                 f.write(header)
                 f.write(markdown_content)
+        self.save_broken_links_csv(os.path.join(TRANSFORMED_DIR, "broken_links.csv"))
+        print(f"Found {len(self.broken_links)}")
 
     def create_build_workspace(self):
         shutil.rmtree(TRANSFORMED_DIR, ignore_errors=True)
         os.makedirs(TRANSFORMED_DIR, exist_ok=True)
         os.makedirs(TRANSFORMED_ASSETS_DIR, exist_ok=True)
+
+    def report_broken_link(self, link, page, attr):
+        self.broken_links.append((link, page, attr))
+
+    def save_broken_links_csv(self, csv_path):
+        with open(csv_path, "w", newline='', encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["link", "page", "attr"])
+            for row in self.broken_links:
+                writer.writerow(row)
 
 
 class Validator:
@@ -206,17 +235,26 @@ if __name__ == "__main__":
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["transform", "validate"],
+        choices=["transform", "validate", "test-mapping"],
         help="Command to run"
     )
     args = parser.parse_args()
 
-    importer = Transformer()
+    transformer = Transformer()
     validator = Validator()
-    if args.command == "transform":
-        importer.main()
+
+    if args.command == "test-mapping":
+        transformer.create_build_workspace()
+        for url, entry, md_path in tqdm(transformer.get_to_process_entries()):
+            # md_path = md_path.replace('build/transformed/', 'build/transformed-test/')
+            os.makedirs(os.path.dirname(md_path), exist_ok=True)
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write(f"---\noriginal_url: {url}\nchecksum: {entry.hash}\n---\n\n")
+
+    elif args.command == "transform":
+        transformer.main()
     elif args.command == "validate":
         validator.main()
     else:
-        importer.main()
+        transformer.main()
         validator.main()
