@@ -26,6 +26,7 @@ IMPORTER_IGNORE_PATTERNS = [
 
 TRANSFORMED_DIR = os.path.join(BUILD_DIR, "transformed")
 TRANSFORMED_ASSETS_DIR = os.path.join(TRANSFORMED_DIR, "assets")
+TRANSFORMED_BROKEN_LINKS_CSV = os.path.join(TRANSFORMED_DIR, 'report_broken_links.csv')
 TRANSFORMED_IGNORED_ELEMENT_SELECTORS = [
     ".hidden",
     ".entry-footer",
@@ -44,13 +45,13 @@ TRANSFORMED_REMAP_URLS = {
 
     # site-specific
     r"(\d{4})\/(\d{2})\/(\d{2})\/(.*)":r"aktualnosci/\1/\2/\1-\2-\3-\4",
-    r"\/o-szkole\/baza-szkoly\/":r"/o-szkole/podstawowe-informacje/baza-szkoly/",
-    r"\/o-szkole\/galeria\/":r"/o-szkole/podstawowe-informacje/baza-szkoly/galeria/",
+    r"\/o-szkole\/baza-szkoly\/":r"/o-szkole/baza-szkoly/",
+    r"\/o-szkole\/galeria\/":r"/o-szkole/baza-szkoly/galeria/",
     r"\/o-szkole\/samorzad-uczniowski\/":r"/dla-ucznia-i-opiekuna/samorzad-uczniowski",
     r"\/o-szkole\/kontakt\/":r"/kontakt/dane-kontaktowe",
     r"\/o-szkole\/kola-zainteresowan\/":r"/co-robimy/kola-zainteresowan",
-    r"\/o-szkole\/patronka\/":r"/o-szkole/podstawowe-informacje/patronka",
-    r"\/o-szkole\/kadra\/":r"/o-szkole/podstawowe-informacje/pracownicy-szkoly/kierownictwo",
+    r"\/o-szkole\/patronka\/":r"/o-szkole/patronka",
+    r"\/o-szkole\/kadra\/":r"/o-szkole/pracownicy-szkoly/kierownictwo",
     r"\/o-szkole\/kalendarium\/":r"/o-szkole/kalendarium",
     r"\/o-szkole\/osiagniecia\/rok-szkolny-20142015":r"/o-szkole/sukcesy/sukcesy-2014-2015",
     r"\/o-szkole\/osiagniecia\/sukcesy-20152016":r"/o-szkole/sukcesy/sukcesy-2015-2016",
@@ -61,9 +62,8 @@ TRANSFORMED_REMAP_URLS = {
 
     r"\/dla-absolwentow\/":r"/co-robimy/dla-absolwentow/",
 
-    r"\/oferta-edukacyjna\/kierunki-ksztalcenia\/":r"/co-robimy/oferta-edukacyjna-branzowej-szkoly-i-stopnia/",
-    r"\/oferta-edukacyjna\/$":r"/co-robimy/oferta-edukacyjna-branzowej-szkoly-i-stopnia/oferta-edukacyjna",
-    r"\/oferta-edukacyjna\/kierunki-ksztalcenia\/szczegolowa-oferta-edukacyjna\/":r"/co-robimy/oferta-edukacyjna-branzowej-szkoly-i-stopnia/broszura",
+    r"\/oferta-edukacyjna\/kierunki-ksztalcenia\/":r"/co-robimy/kierunki-ksztalcenia/",
+    r"\/oferta-edukacyjna\/$":r"/co-robimy/oferta-edukacyjna/",
     r"\/oferta-edukacyjna\/dni-otwarte-szkoly\/":r"/co-robimy/dni-otwarte-szkoly",
     r"\/oferta-edukacyjna\/rekrutacja\/":r"/co-robimy/rekrutacja",
     r"\/oferta-edukacyjna\/dokumenty-do-pobrania\/":r"/o-szkole/dokumenty-do-pobrania",
@@ -84,10 +84,10 @@ TRANSFORMED_REMAP_URLS = {
     r"\/wfosigw\/":r"/co-robimy/projekty-wfosigw/",
 
     r"\/oferty-pracy\/":r"/co-robimy/oferty-pracy/",
-    r"\/zjazd-w-szkolach-dla-doroslych\/":r"/co-robimy/kwalifikacyjne-kursy-zawodowe/",
+    r"\/zjazd-w-szkolach-dla-doroslych\/":r"/co-robimy/szkoly-dla-doroslych/",
+    r"\/dla-rodzicow/kursy-kwalifikacyjne/terminy-zjazdow\/":r"/co-robimy/szkoly-dla-doroslych/terminy-zjazdow/",
 
-    r"\/dla-rodzicow\/kursy-kwalifikacyjne\/terminy-zjazdow\/":r"/co-robimy/kursy-kwalifikacyjne/terminy-zjazdow/",
-    r"\/dla-rodzicow\/kursy-kwalifikacyjne\/":r"/co-robimy/kursy-kwalifikacyjne/",
+    r"\/dla-rodzicow\/kursy-kwalifikacyjne\/":r"/co-robimy/szkoly-dla-doroslych/kursy-kwalifikacyjne/",
     r"\/dla-rodzicow\/egzamin-maturalny\/":r"/dla-ucznia-i-opiekuna/egzaminy-zawodowe/",
     r"\/dla-rodzicow\/$":r"/dla-ucznia-i-opiekuna/dla-opiekunow/",
     r"\/dla-rodzicow\/":r"/dla-ucznia-i-opiekuna/",
@@ -134,6 +134,7 @@ TRANSFORMED_IGNORED_URLS = [
     r"\/turnieju-dla-uczniow-szkol-srednich-o-puchar-komendanta-wojewodzkiego-policji-w-lodzi\/$",
     r"\/dla-rodzicow/plan-lekcji\/$",
     r"\/dla-absolwentow\/formularz-zgloszeniowy-na-zjazd-absolwentow\/$",
+    r"\/oferta-edukacyjna\/kierunki-ksztalcenia\/szczegolowa-oferta-edukacyjna\/$",
 ]
 
 
@@ -142,3 +143,6 @@ TRANSFORMER_TITLE_ADJUSTER = lambda title: title.replace(' – Zespół Szkół 
 BROKEN_LINKS_MAP = {
     '../wp-content/': 'https://zspzd-technikum.pl/wp-content/'
 }
+
+FIXED_DIR = os.path.join(BUILD_DIR, "transformed-fixed")
+OUTPUT_DIR = os.path.join(BUILD_DIR, "output")

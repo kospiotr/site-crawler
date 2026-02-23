@@ -2,6 +2,7 @@ import argparse
 import os
 import re
 import shutil
+import time
 import urllib.parse
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
@@ -16,16 +17,27 @@ from tqdm import tqdm
 
 from config import INPUT_DIR, INPUT_ASSETS_PATH, INPUT_SITE_MAP_CSV, INPUT_ASSETS_MAP_CSV, \
     TRANSFORMED_IGNORED_ELEMENT_SELECTORS, BROKEN_LINKS_MAP, TRANSFORMED_IGNORED_URLS, TRANSFORMED_REMAP_URLS, \
-    TRANSFORMED_DIR, TRANSFORMED_ASSETS_DIR, IMPORTER_START_URL, TRANSFORMER_TITLE_ADJUSTER
+    TRANSFORMED_DIR, TRANSFORMED_ASSETS_DIR, IMPORTER_START_URL, TRANSFORMER_TITLE_ADJUSTER, \
+    TRANSFORMED_BROKEN_LINKS_CSV, FIXED_DIR
 from app_01_importer import Sitemap
 
 
+def backup_file(file_to_backup):
+    if os.path.exists(file_to_backup):
+        timestamp = int(time.time())
+        file_timestamp = int(os.path.getmtime(file_to_backup))
+        filename = os.path.splitext(os.path.basename(file_to_backup))[0]
+        extension = os.path.splitext(file_to_backup)[1]
+        target_file_path = f"{os.path.dirname(file_to_backup)}/{filename}{extension}-{timestamp}.bak"
+        shutil.copy(file_to_backup, target_file_path)
 
 class Transformer:
 
     def __init__(self):
         self.site_map = Sitemap(INPUT_SITE_MAP_CSV, None)
         self.assets_map = Sitemap(INPUT_ASSETS_MAP_CSV, None)
+        self.report_from = []
+        self.report_to = []
 
         self.url_to_md = {}
         for url, entry in tqdm(self.site_map.items(), desc="Building url to md map"):
@@ -93,10 +105,6 @@ class Transformer:
                 if os.path.exists(src):
                     shutil.copy2(src, dst_abs_path)
                     tag[attr] = rel_path
-                else:
-                    self.report_broken_link(src, dst_abs_path, current_md_path)
-            elif link.startswith(IMPORTER_START_URL):
-                self.report_broken_link(link, current_md_path, attr)
 
         return soup
 
@@ -119,16 +127,31 @@ class Transformer:
         out = []
         for url, entry in tqdm(self.site_map.items(), desc="Collecting pages"):
             if entry.status.name != "DOWNLOADED" or not entry.path:
+                self.report_from.append((url,None,'broken'))
                 continue
             if self.should_ignore_page(url):
+                self.report_from.append((url,None,'ignored'))
                 continue
             md_path = self.url_to_md[url]
             out.append((url, entry, md_path))
         return out
 
+    def write_report_from(self):
+        with open(os.path.join(TRANSFORMED_DIR, 'report_from.csv'), "w", newline='', encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["from", "to", "details"])
+            for row in self.report_from:
+                writer.writerow(row)
 
-    def main(self):
-        self.create_build_workspace()
+    def write_report_to(self):
+        with open(os.path.join(TRANSFORMED_DIR, 'report_to.csv'), "w", newline='', encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["from", "to", "details"])
+            for row in self.report_to:
+                writer.writerow(row)
+
+    def transform(self):
+        self.create_workspace()
         for url, entry, md_path in tqdm(self.get_to_process_entries(), desc="Processing pages"):
             html_path = os.path.join(INPUT_ASSETS_PATH, entry.path)
             with open(html_path, "r", encoding="utf-8") as f:
@@ -137,7 +160,9 @@ class Transformer:
             self.remove_ignored_elements(soup)
             main_elem = soup.find("main")
             if not main_elem:
+                self.report_from.append((url,None,'no main content'))
                 continue
+
             title = TRANSFORMER_TITLE_ADJUSTER(soup.title.string) if soup.title and soup.title.string else ""
 
             # Remove <h1> if matches title
@@ -157,17 +182,35 @@ class Transformer:
             with open(md_path, "w", encoding="utf-8") as f:
                 f.write(header)
                 f.write(markdown_content)
+                self.report_from.append((url,md_path,None))
+                self.report_to.append((url,md_path,None))
 
-    def create_build_workspace(self):
+        self.write_report_from()
+        self.write_report_to()
+
+    def create_workspace(self):
         shutil.rmtree(TRANSFORMED_DIR, ignore_errors=True)
         os.makedirs(TRANSFORMED_DIR, exist_ok=True)
         os.makedirs(TRANSFORMED_ASSETS_DIR, exist_ok=True)
 
+    def test_mapping(self):
+        self.create_workspace()
+        for url, entry, md_path in tqdm(transformer.get_to_process_entries()):
+            # md_path = md_path.replace('build/transformed/', 'build/transformed-test/')
+            os.makedirs(os.path.dirname(md_path), exist_ok=True)
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write(f"---\noriginal_url: {url}\nchecksum: {entry.hash}\n---\n\n")
+                self.report_from.append((url,md_path,None))
+                self.report_to.append((url,md_path,None))
+        self.write_report_from()
+        self.write_report_to()
+
+
 class Validator:
 
-    def __init__(self):
+    def __init__(self, dir=TRANSFORMED_DIR):
         self.broken_links = []
-
+        self.dir = dir
 
     def extract_links_and_assets(self, md_content):
         # Markdown links: [text](url "optional title")
@@ -187,9 +230,9 @@ class Validator:
         links, images = self.extract_links_and_assets(content)
         all_refs = links + images
         for ref in all_refs:
-
+            type = "link" if ref in links else "image"
             if ref.startswith(IMPORTER_START_URL):
-                self.broken_links.append((md_path, ref))
+                self.broken_links.append((md_path, ref, type))
             # Ignore other external links
 
             if ref.startswith('http://') or ref.startswith('https://') or ref.startswith('mailto:'):
@@ -201,7 +244,7 @@ class Validator:
             ref_path = (md_path.parent / ref).resolve()
             try:
                 if not ref_path.exists():
-                    self.broken_links.append((md_path, ref))
+                    self.broken_links.append((md_path, ref, type))
             except Exception as e:
                 errors.append(f"Could not process file {md_path}: {ref}")
         return errors
@@ -217,46 +260,130 @@ class Validator:
         return all_errors
 
     def save(self, csv_path):
+        backup_file(csv_path)
         with open(csv_path, "w", newline='', encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["link", "page", "attr"])
+            writer.writerow(["file", "link", "type"])
             for row in self.broken_links:
                 writer.writerow(row)
 
-    def main(self):
-        # Use OUTPUT_DIR/adjusted as default
-        processing_errors = self.validate_markdown_dir(TRANSFORMED_DIR)
+    def validate(self):
+        processing_errors = self.validate_markdown_dir(self.dir)
+        if len(processing_errors) > 0:
+            print(f'Encountered errors during processing: {processing_errors}')
+
+        self.save(os.path.join(self.dir, 'report_broken_links.csv'))
         if len(self.broken_links) > 0:
             print(f'Found {len(self.broken_links)} broken links')
-            self.save(os.path.join(TRANSFORMED_DIR, 'broken_links.csv'))
         else:
             print('No broken links found')
+
+class BrokenLinkFixer:
+    def __init__(self, test: bool = False):
+        self.broken_links = self.load_broken_links(TRANSFORMED_BROKEN_LINKS_CSV)
+        self.test = test
+
+    def create_workspace(self):
+        shutil.rmtree(FIXED_DIR, ignore_errors=True)
+        os.makedirs(FIXED_DIR, exist_ok=True)
+
+    def load_broken_links(self, csv_path):
+        broken = []
+        if not os.path.exists(csv_path):
+            return broken
+        with open(csv_path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Expect columns: link, page, attr
+                broken.append({
+                    "file": row.get("file"),
+                    "link": row.get("link"),
+                    "type": row.get("type")
+                })
+        return broken
+
+    def fix_file(self, file, link):
+        if not self.test:
+            backup_file(file)
+
+        with open(file, "r", encoding="utf-8") as f:
+            content = f.read()
+        for bl in tqdm(link, desc="Fixing broken links in file"):
+            link_url = bl["link"]
+            type = bl["type"]
+            if type == "image":
+                # Remove image markdown: ![alt](link "optional title")
+                # Also remove images inside links: [![](link "title")](...)
+                # Remove [![](link "title")](...) first
+                content = re.sub(
+                    rf'\[!\[.*?\]\(\s*{re.escape(link_url)}(?:\s+"[^"]*")?\s*\)\]\([^\)]*\)',
+                    '',
+                    content
+                )
+                # Then remove standalone images
+                content = re.sub(
+                    rf'!\[.*?\]\(\s*{re.escape(link_url)}(?:\s+"[^"]*")?\s*\)',
+                    '',
+                    content
+                )
+            elif type == "link":
+                # Replace [text](link) with just text
+                content = re.sub(
+                    rf'\[([^\]]+)\]\(\s*{re.escape(link_url)}(?:\s+"[^"]*")?\s*\)',
+                    r'\1',
+                    content
+                )
+        if self.test:
+            file = file.replace(TRANSFORMED_DIR, FIXED_DIR)
+            os.makedirs(os.path.dirname(file), exist_ok=True)
+
+        with open(file, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    def fix_all(self):
+        # Group broken links by page
+        links_by_page = {}
+        for bl in self.broken_links:
+            file = bl["file"]
+            links_by_page.setdefault(file, []).append(bl)
+
+        for file, link in tqdm(links_by_page.items(), desc="Fixing broken links"):
+            print(f"Fixing broken links in {file}")
+            if os.path.exists(file):
+                self.fix_file(file, link)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Transformer CLI")
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["transform", "validate", "test-mapping"],
+        choices=["transform", "validate", "test-mapping", "fix-apply", "fix-test"],
         help="Command to run"
     )
     args = parser.parse_args()
 
     transformer = Transformer()
-    validator = Validator()
+    transformed_validator = Validator(TRANSFORMED_DIR)
+    fixed_validator = Validator(FIXED_DIR)
+    fixer = BrokenLinkFixer()
 
     if args.command == "test-mapping":
-        transformer.create_build_workspace()
-        for url, entry, md_path in tqdm(transformer.get_to_process_entries()):
-            # md_path = md_path.replace('build/transformed/', 'build/transformed-test/')
-            os.makedirs(os.path.dirname(md_path), exist_ok=True)
-            with open(md_path, "w", encoding="utf-8") as f:
-                f.write(f"---\noriginal_url: {url}\nchecksum: {entry.hash}\n---\n\n")
+        transformer.test_mapping()
 
     elif args.command == "transform":
-        transformer.main()
+        transformer.transform()
     elif args.command == "validate":
-        validator.main()
+        transformed_validator.validate()
+    elif args.command == "fix-test":
+        fixer = BrokenLinkFixer(test=True)
+        transformed_validator.validate()
+        fixer.fix_all()
+        shutil.copytree(TRANSFORMED_ASSETS_DIR, os.path.join(FIXED_DIR, 'assets'))
+        fixed_validator.validate()
+    elif args.command == "fix-apply":
+        transformed_validator.validate()
+        fixer.fix_all()
+        transformed_validator.validate()
     else:
-        transformer.main()
-        validator.main()
+        transformer.transform()
+        transformed_validator.validate()
