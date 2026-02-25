@@ -9,6 +9,7 @@ import json
 import os
 
 from config import OUTPUT_DIR
+from config import TRANSFORMED_DIR
 
 config = {
     'url': 'https://www.gov.pl/web/zsckr-zdunska-dabrowa',
@@ -16,11 +17,10 @@ config = {
     'repository':{
         'images_root_id': '2c907143-e3cf-451b-ab0e-aa915030c43b',
         'attachments_root_id': 'a7b3e0cf-d9d7-4182-8898-beb7807528a5',
-        'folder_aktualnosci_id': '7fce3566-3f99-4679-bf42-c512652c0261',
     },
     'cookies': {
-        'JSESSIONID': '6D86BCBCCDFFCFE0CC0089995B4E9819',
-        'XSRF-TOKEN': '67083032-bd16-4e2a-b04f-febecbdb333f',
+        'JSESSIONID': 'C2136B4F4F833E53B9D11A9E8154856E',
+        'XSRF-TOKEN': 'a6625cba-eea3-467f-9edb-f7cb15fc9a84',
     }
 }
 
@@ -187,17 +187,88 @@ class Publisher:
     def refresh_repo_attachments(self):
         pass
 
-    # def walk(self, acc, fn):
+    def load_index(self):
+        """
+        Loads and flattens indexes for images, pages, and attachments.
+        Each index is a dict with the full path as the key.
+        """
+        def walk_folders_tree(tree, parent_path=""):
+            index = {}
+            # Handle files at this level
+            for file in tree.get("files", []):
+                path = os.path.join(parent_path, file["name"])
+                index[path] = file
+            # Handle folders recursively
+            for folder in tree.get("folders", []):
+                folder_path = os.path.join(parent_path, folder["name"])
+                # Some trees (like images.json) have 'children' key for subfolders/files
+                children = folder.get("children")
+                if children:
+                    index.update(walk_folders_tree(children, folder_path))
+            return index
 
+        # Images index
+        with open(os.path.join(OUTPUT_DIR, "images.json"), "r", encoding="utf-8") as f:
+            images_tree = json.load(f)
+        self.images_index = walk_folders_tree(images_tree)
 
-    def refresh_pages(self):
-        images = self.walk_repo_folder(config['repository']['images_root_id'])
-        with open(os.path.join(OUTPUT_DIR, 'images.json'), "w", encoding="utf-8") as f:
-            json.dump(images, f, indent=2)
+        # Attachments index
+        with open(os.path.join(OUTPUT_DIR, "attachments.json"), "r", encoding="utf-8") as f:
+            attachments_tree = json.load(f)
+        self.attachments_index = walk_folders_tree(attachments_tree)
 
-        attachments = self.walk_repo_folder(config['repository']['attachments_root_id'])
-        with open(os.path.join(OUTPUT_DIR, 'attachments.json'), "w", encoding="utf-8") as f:
-            json.dump(attachments, f, indent=2)
+        # Pages index (flatten tree, key is displayedPath)
+        def walk_pages_tree(pages, index={}):
+            for page in pages:
+                path = page.get("displayedPath")
+                if path:
+                    index[path] = page
+                if "pages" in page:
+                    walk_pages_tree(page["pages"], index)
+            return index
+
+        with open(os.path.join(OUTPUT_DIR, "pages.json"), "r", encoding="utf-8") as f:
+            pages_tree = json.load(f)
+        self.pages_index = walk_pages_tree(pages_tree)
+
+    def get_page_by_path(self, relative_path):
+        pass
+
+    def plan(self):
+        """
+        Walk all markdown files from the transformed folder, read and print their content.
+        """
+
+        self.load_index()
+        print(self.pages_index)
+
+        for root, dirs, files in os.walk(TRANSFORMED_DIR):
+            for file in files:
+                if file.endswith('.md'):
+                    file_path = os.path.join(root, file)
+                    relative_path = os.path.join('/',os.path.relpath(os.path.splitext(file_path)[0], TRANSFORMED_DIR))
+
+                    if self.page_exists(relative_path):
+                        pass
+                    else:
+                        pass
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                        print(f"--- {file_path} {relative_path} ---")
+
+    def create_index(self):
+
+        pages = self.client.get_pages()
+        with open(os.path.join(OUTPUT_DIR, 'pages.json'), "w", encoding="utf-8") as f:
+            json.dump(pages, f, indent=2)
+        #
+        # images = self.walk_repo_folder(config['repository']['images_root_id'])
+        # with open(os.path.join(OUTPUT_DIR, 'images.json'), "w", encoding="utf-8") as f:
+        #     json.dump(images, f, indent=2)
+        #
+        # attachments = self.walk_repo_folder(config['repository']['attachments_root_id'])
+        # with open(os.path.join(OUTPUT_DIR, 'attachments.json'), "w", encoding="utf-8") as f:
+        #     json.dump(attachments, f, indent=2)
 
     def create_workspace(self):
         # shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
@@ -214,7 +285,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["refresh", "plan", "apply", "test", "client"],
+        choices=["create_index", "plan", "apply", "test", "client"],
         help="Command to run"
     )
 
@@ -235,8 +306,10 @@ if __name__ == "__main__":
 
     if args.command == "test":
         publisher.test()
-    elif args.command == "refresh":
-        publisher.refresh_pages()
+    elif args.command == "create_index":
+        publisher.create_index()
+    elif args.command == "plan":
+        publisher.plan()
     elif args.command == "client":
         # Parse subcommands for client
         client_args = client_parser.parse_args(unknown)
@@ -249,4 +322,4 @@ if __name__ == "__main__":
         else:
             print("No valid client subcommand provided.")
     else:
-        publisher.refresh_pages()
+        publisher.create_index()

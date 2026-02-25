@@ -12,6 +12,8 @@ import re
 import sys
 from pathlib import Path
 import csv
+from datetime import datetime
+import yaml  # <-- add this import
 
 from tqdm import tqdm
 
@@ -82,6 +84,7 @@ class Transformer:
 
     def convert_links_and_assets(self, soup, current_md_path):
         # Convert <a> and <img> and other asset links to local
+        assets = {}
         for tag in soup.find_all(["a", "img", "audio", "video", "source"]):
             attr = "href" if tag.name == "a" else "src"
             link = tag.get(attr)
@@ -102,11 +105,31 @@ class Transformer:
 
                 src = os.path.join(INPUT_ASSETS_PATH, asset_name)
                 os.makedirs(os.path.dirname(dst_abs_path), exist_ok=True)  # Ensure deep structure exists
+
                 if os.path.exists(src):
                     shutil.copy2(src, dst_abs_path)
                     tag[attr] = rel_path
+                    asset = assets[rel_path] = {
+                        'tag': tag.name
+                    }
+                    alt = tag.get('alt', None)
+                    if alt and alt != '':
+                        asset['alt'] = alt
 
-        return soup
+                    title = tag.get('title', None)
+                    if title and title != '':
+                        asset['title'] = title
+
+                    href = tag.get('href', None)
+                    if href and href != '':
+                        asset['href'] = href
+
+                else:
+                    tag.attrs.pop(attr, None)
+            else:
+                tag.attrs.pop(attr, None)
+
+        return soup, assets
 
 
 
@@ -150,6 +173,15 @@ class Transformer:
             for row in self.report_to:
                 writer.writerow(row)
 
+    @staticmethod
+    def write_frontmatter(f, frontmatter_obj):
+        """
+        Write the frontmatter_obj as YAML frontmatter to the file-like object f.
+        """
+        f.write("---\n")
+        yaml.safe_dump(frontmatter_obj, f, allow_unicode=True, sort_keys=False)
+        f.write("---\n\n")
+
     def transform(self):
         self.create_workspace()
         for url, entry, md_path in tqdm(self.get_to_process_entries(), desc="Processing pages"):
@@ -172,15 +204,31 @@ class Transformer:
 
             # Convert links and assets
             os.makedirs(os.path.dirname(md_path), exist_ok=True)
-            main_elem = self.convert_links_and_assets(main_elem, md_path)
+            main_elem, assets = self.convert_links_and_assets(main_elem, md_path)
             # Markdownify
             markdown_content = md(str(main_elem), heading_style="ATX")
-            # Extract title
-            # Header
-            header = f"---\ntitle: {title}\noriginal_url: {url}\nchecksum: {entry.hash}\n---\n\n"
+            # Prepare frontmatter
+            frontmatter = {
+                "title": title,
+                "original_url": url,
+                "checksum": entry.hash,
+                "assets": assets
+            }
+            # Extract date from filename if present
+            date_match = re.match(r"(\d{4}-\d{2}-\d{2})", os.path.basename(md_path))
+            date_str = None
+            if date_match:
+                date_str = date_match.group(1)
+                # Optionally validate date
+                try:
+                    datetime.strptime(date_str, "%Y-%m-%d")
+                except ValueError:
+                    date_str = None
+            if date_str:
+                frontmatter["date"] = date_str
             # Write adjusted file
             with open(md_path, "w", encoding="utf-8") as f:
-                f.write(header)
+                self.write_frontmatter(f, frontmatter)
                 f.write(markdown_content)
                 self.report_from.append((url,md_path,None))
                 self.report_to.append((url,md_path,None))
@@ -302,13 +350,13 @@ class BrokenLinkFixer:
                 })
         return broken
 
-    def fix_file(self, file, link):
+    def fix_file(self, file, links):
         if not self.test:
             backup_file(file)
 
         with open(file, "r", encoding="utf-8") as f:
             content = f.read()
-        for bl in tqdm(link, desc="Fixing broken links in file"):
+        for bl in links:
             link_url = bl["link"]
             type = bl["type"]
             if type == "image":
@@ -348,7 +396,6 @@ class BrokenLinkFixer:
             links_by_page.setdefault(file, []).append(bl)
 
         for file, link in tqdm(links_by_page.items(), desc="Fixing broken links"):
-            print(f"Fixing broken links in {file}")
             if os.path.exists(file):
                 self.fix_file(file, link)
 
@@ -387,3 +434,5 @@ if __name__ == "__main__":
     else:
         transformer.transform()
         transformed_validator.validate()
+        fixer.fix_all()
+        fixed_validator.validate()
