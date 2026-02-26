@@ -215,7 +215,7 @@ class Transformer:
                 "assets": assets
             }
             # Extract date from filename if present
-            date_match = re.match(r"(\d{4}-\d{2}-\d{2})", os.path.basename(md_path))
+            date_match = re.match(r".*(\d{4}-\d{2}-\d{2}).*", url.replace(r'/', '-'))
             date_str = None
             if date_match:
                 date_str = date_match.group(1)
@@ -316,6 +316,7 @@ class Validator:
                 writer.writerow(row)
 
     def validate(self):
+        self.broken_links = []
         processing_errors = self.validate_markdown_dir(self.dir)
         if len(processing_errors) > 0:
             print(f'Encountered errors during processing: {processing_errors}')
@@ -435,4 +436,4 @@ if __name__ == "__main__":
         transformer.transform()
         transformed_validator.validate()
         fixer.fix_all()
-        fixed_validator.validate()
+        transformed_validator.validate()

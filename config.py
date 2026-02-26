@@ -44,7 +44,7 @@ TRANSFORMED_REMAP_URLS = {
     f'{IMPORTER_START_URL}/$':f'{IMPORTER_START_URL}/_index_2',
 
     # site-specific
-    r"(\d{4})\/(\d{2})\/(\d{2})\/(.*)":r"aktualnosci/\1/\2/\1-\2-\3-\4",
+    r"(\d{4})\/(\d{2})\/(\d{2})\/(.*)":r"aktualnosci/\1/\2/\3-\4",
     r"\/o-szkole\/baza-szkoly\/":r"/o-szkole/baza-szkoly/",
     r"\/o-szkole\/galeria\/":r"/o-szkole/baza-szkoly/galeria/",
     r"\/o-szkole\/samorzad-uczniowski\/":r"/dla-ucznia-i-opiekuna/samorzad-uczniowski",

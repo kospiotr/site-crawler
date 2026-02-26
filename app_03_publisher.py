@@ -1,5 +1,8 @@
 import argparse
+import re
 import shutil
+import time
+import uuid
 
 import requests
 import requests
@@ -14,13 +17,13 @@ from config import TRANSFORMED_DIR
 config = {
     'url': 'https://www.gov.pl/web/zsckr-zdunska-dabrowa',
     'site_id': '20003421',
-    'repository':{
+    'repository': {
         'images_root_id': '2c907143-e3cf-451b-ab0e-aa915030c43b',
         'attachments_root_id': 'a7b3e0cf-d9d7-4182-8898-beb7807528a5',
     },
     'cookies': {
-        'JSESSIONID': 'C2136B4F4F833E53B9D11A9E8154856E',
-        'XSRF-TOKEN': 'a6625cba-eea3-467f-9edb-f7cb15fc9a84',
+        'JSESSIONID': '2B900DDFCF41A5D494ECF534FC6721C8',
+        'XSRF-TOKEN': 'dbe72a1b-ccc6-49d4-ab64-31428db8f564',
     }
 }
 
@@ -42,6 +45,20 @@ class RedakcjaGovPlClient:
                 'accept': 'application/json, text/plain, */*',
             },
             cookies=self.cookies
+        ).json()
+
+    def post_page(self, parent_page_id: str, type: str, name: str, displayed_path: str):
+        displayed_path = displayed_path.removeprefix('/')
+        return requests.post(
+            f'{self.base_url}/api/v2/sites/{self.site_id}/pages?parentPageId={parent_page_id}',
+            headers={
+                'accept': 'application/json, text/plain, */*',
+                'x-xsrf-token': self.cookies['XSRF-TOKEN']
+            },
+            cookies=self.cookies,
+            json={"pages": [], "registers": [], "renderChildrenComponents": False, "isAccessPermited": False,
+                  "type": type, "showInSiteMenu": True, "name": name,
+                  "displayedPath": displayed_path}
         ).json()
 
     def get_repo_folders(self, parent_folder_id: str):
@@ -95,7 +112,7 @@ class RedakcjaGovPlClient:
             "folderId": folder_id,
             "hidden": False,
             "width": 64,  # Set actual width if needed
-            "height": 64, # Set actual height if needed
+            "height": 64,  # Set actual height if needed
             "activeFormat": None,
             "fileContent": {
                 "lastModified": 1771624425167,
@@ -114,7 +131,6 @@ class RedakcjaGovPlClient:
             "tags": None,
             "source": None
         }
-
 
         # Prepare multipart form data
         files = {
@@ -155,15 +171,110 @@ class RedakcjaGovPlClient:
         ).json()
 
 
+class PagesRepository:
+    dry_run = True
+
+    def __init__(self):
+        self.client = RedakcjaGovPlClient(config['site_id'], config['cookies'])
+        self.load_from_file()
+
+    def load_from_file(self):
+        with open(os.path.join(OUTPUT_DIR, "pages.json"), "r", encoding="utf-8") as f:
+            self.pages = json.load(f)
+
+    def dump(self):
+        timestamp = int(time.time())
+        with open(os.path.join(OUTPUT_DIR, f"pages.json"), "w", encoding="utf-8") as f:
+            json.dump(self.pages, f, indent=2)
+
+    def get_page_by_path(self, relative_path):
+        pass
+
+    @staticmethod
+    def nested_url_from_path(rel_path):
+        return os.path.splitext(rel_path)[0]
+
+    @staticmethod
+    def absolute_url_from_path(rel_path):
+        path_no_ext = os.path.splitext(rel_path)[0]
+        url = re.sub(r'[^a-zA-Z0-9_-]', '-', path_no_ext)
+        return url
+
+    def find_page(self, path, pages=None):
+        if not path:
+            return None
+        if not pages:
+            pages = self.pages
+
+        for page in pages:
+            if page.get("displayedPath") == '/' + path:
+                return page
+            if "pages" in page and page["pages"]:
+                found = self.find_page(path, page["pages"])
+                if found:
+                    return found
+        return None
+
+    def find_page_for_path(self, path):
+        out = self.find_page(self.absolute_url_from_path(path))
+        print(f" For: {path}, found: {out}")
+        return out
+
+    def get_root_page(self):
+        return self.pages[0]
+
+    def page_name_from_url(self, path):
+        path = os.path.splitext(os.path.basename(path))[0]
+        name_str = re.sub(r'[-_]', ' ', path)
+        return name_str.capitalize()
+
+    def create_page(self, parent_page, file_path, name=None, type='ARTICLE'):
+        path = os.path.basename(file_path)
+        if not name:
+            name = self.page_name_from_url(path)
+
+        if self.dry_run:
+            out = {
+                "id": uuid.uuid4().int,
+                "siteId": parent_page['siteId'],
+                "parentPageId": parent_page['id'],
+                "orderNumber": 0,
+                "name": name,
+                "displayedPath": '/' + self.absolute_url_from_path(file_path),
+                "type": type,
+                "state": "SKETCH",
+                "futureVersionState": "NONE",
+                "bip": False,
+                "recommendedForMainSite": False,
+                "showInSiteMenu": False,
+                "createDate": "01.01.2026 00:00",
+                "updateDate": "01.01.2026 00:00",
+                "pages": [],
+                "registers": []
+            }
+            parent_page['pages'].append(out)
+        else:
+            out = self.client.post_page(parent_page['id'], type, name, self.absolute_url_from_path(file_path))
+            out['pages'] = []
+
+        return out
+
+    def refresh(self):
+        self.pages = self.client.get_pages()
+
+
 class Publisher:
 
     def __init__(self):
         self.client = RedakcjaGovPlClient(config['site_id'], config['cookies'])
+        self.pages_repository = PagesRepository()
+        self.plan_content = []
 
     def walk_repo_folder(self, folder_id):
         """
         Recursively walk through repo folders and build a tree with folders and files.
         """
+
         def _walk(fid):
             results = self.client.get_repo_folders(fid)['results']
             for result in results:
@@ -188,87 +299,49 @@ class Publisher:
         pass
 
     def load_index(self):
-        """
-        Loads and flattens indexes for images, pages, and attachments.
-        Each index is a dict with the full path as the key.
-        """
-        def walk_folders_tree(tree, parent_path=""):
-            index = {}
-            # Handle files at this level
-            for file in tree.get("files", []):
-                path = os.path.join(parent_path, file["name"])
-                index[path] = file
-            # Handle folders recursively
-            for folder in tree.get("folders", []):
-                folder_path = os.path.join(parent_path, folder["name"])
-                # Some trees (like images.json) have 'children' key for subfolders/files
-                children = folder.get("children")
-                if children:
-                    index.update(walk_folders_tree(children, folder_path))
-            return index
-
-        # Images index
-        with open(os.path.join(OUTPUT_DIR, "images.json"), "r", encoding="utf-8") as f:
-            images_tree = json.load(f)
-        self.images_index = walk_folders_tree(images_tree)
-
-        # Attachments index
         with open(os.path.join(OUTPUT_DIR, "attachments.json"), "r", encoding="utf-8") as f:
-            attachments_tree = json.load(f)
-        self.attachments_index = walk_folders_tree(attachments_tree)
+            self.attachments = json.load(f)
 
-        # Pages index (flatten tree, key is displayedPath)
-        def walk_pages_tree(pages, index={}):
-            for page in pages:
-                path = page.get("displayedPath")
-                if path:
-                    index[path] = page
-                if "pages" in page:
-                    walk_pages_tree(page["pages"], index)
-            return index
+        with open(os.path.join(OUTPUT_DIR, "images.json"), "r", encoding="utf-8") as f:
+            self.images = json.load(f)
 
-        with open(os.path.join(OUTPUT_DIR, "pages.json"), "r", encoding="utf-8") as f:
-            pages_tree = json.load(f)
-        self.pages_index = walk_pages_tree(pages_tree)
+    def ensure_exists_page(self, file_path):
+        print(f"f Ensure: {file_path}")
+        if not file_path:
+            return self.pages_repository.get_root_page()
 
-    def get_page_by_path(self, relative_path):
-        pass
+        page = self.pages_repository.find_page_for_path(file_path)
+        if page:
+            print(f"  Exists: {page}")
+            return page
 
-    def plan(self):
-        """
-        Walk all markdown files from the transformed folder, read and print their content.
-        """
+        parent_path = os.path.dirname(file_path)
+        parent_page = self.pages_repository.find_page_for_path(parent_path)
 
-        self.load_index()
-        print(self.pages_index)
+        if not parent_page:
+            parent_page = self.ensure_exists_page(parent_path)
+        if not parent_page:
+            parent_page = self.pages_repository.get_root_page()
 
+        print(f"Create page: {file_path}")
+        type = 'ARTICLE'
+        if os.path.isdir(os.path.join(TRANSFORMED_DIR, file_path)):
+            type = 'UNIVERSAL_LIST'
+        out = self.pages_repository.create_page(parent_page, file_path, type=type)
+        self.add_plan_step("Create page", out)
+        self.pages_repository.refresh()
+        self.pages_repository.dump()
+        return out
+
+    def execute(self):
+        self.pages_repository.refresh()
         for root, dirs, files in os.walk(TRANSFORMED_DIR):
             for file in files:
                 if file.endswith('.md'):
                     file_path = os.path.join(root, file)
-                    relative_path = os.path.join('/',os.path.relpath(os.path.splitext(file_path)[0], TRANSFORMED_DIR))
-
-                    if self.page_exists(relative_path):
-                        pass
-                    else:
-                        pass
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                        print(f"--- {file_path} {relative_path} ---")
-
-    def create_index(self):
-
-        pages = self.client.get_pages()
-        with open(os.path.join(OUTPUT_DIR, 'pages.json'), "w", encoding="utf-8") as f:
-            json.dump(pages, f, indent=2)
-        #
-        # images = self.walk_repo_folder(config['repository']['images_root_id'])
-        # with open(os.path.join(OUTPUT_DIR, 'images.json'), "w", encoding="utf-8") as f:
-        #     json.dump(images, f, indent=2)
-        #
-        # attachments = self.walk_repo_folder(config['repository']['attachments_root_id'])
-        # with open(os.path.join(OUTPUT_DIR, 'attachments.json'), "w", encoding="utf-8") as f:
-        #     json.dump(attachments, f, indent=2)
+                    self.ensure_exists_page(os.path.relpath(file_path, TRANSFORMED_DIR))
+        self.pages_repository.dump()
+        self.dump_plan()
 
     def create_workspace(self):
         # shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
@@ -279,6 +352,18 @@ class Publisher:
         # print(client.upload_image('741141c9-dc7f-4e8c-a4c4-883b496cd02a', 'faviconV3.png', 'test'))
         # print(client.put_page_sketch('21382036','2/0'))
         print(self.client.get_page_version_history('21382036'))
+
+    def add_plan_step(self, param, out):
+        self.plan_content.append({'action': param, 'param': out})
+
+    def dump_plan(self):
+        timestamp = int(time.time())
+        with open(os.path.join(OUTPUT_DIR, f"plan.json"), "w", encoding="utf-8") as f:
+            json.dump(self.plan_content, f, indent=2)
+
+    def set_dry_run(self, dry_run=True):
+        self.pages_repository.dry_run = dry_run
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Publisher CLI")
@@ -309,7 +394,11 @@ if __name__ == "__main__":
     elif args.command == "create_index":
         publisher.create_index()
     elif args.command == "plan":
-        publisher.plan()
+        publisher.set_dry_run(True)
+        publisher.execute()
+    elif args.command == "apply":
+        publisher.set_dry_run(False)
+        publisher.execute()
     elif args.command == "client":
         # Parse subcommands for client
         client_args = client_parser.parse_args(unknown)
