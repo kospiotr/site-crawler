@@ -111,6 +111,7 @@ TRANSFORMED_IGNORED_URLS = [
     r"\/\d{4}\/\d{2}\/\d{2}\/$",
     r"\/\d{4}\/\d{2}\/page/\d*\/$",
     r"\/\d{4}\/\d{2}\/\d{2}\/page/\d*\/$",
+    r"\/\d{4}\/\d{2}\/\d{2}\/.+\/.+",
     r"\/category\/",
     r"\/author\/",
 

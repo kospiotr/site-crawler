@@ -3,13 +3,17 @@ import re
 import shutil
 import time
 import uuid
+import yaml
 
+import markdown
 import requests
 import requests
 import base64
 import mimetypes
 import json
 import os
+
+from tqdm import tqdm
 
 from config import OUTPUT_DIR
 from config import TRANSFORMED_DIR
@@ -22,10 +26,36 @@ config = {
         'attachments_root_id': 'a7b3e0cf-d9d7-4182-8898-beb7807528a5',
     },
     'cookies': {
-        'JSESSIONID': '2B900DDFCF41A5D494ECF534FC6721C8',
-        'XSRF-TOKEN': 'dbe72a1b-ccc6-49d4-ab64-31428db8f564',
+        'JSESSIONID': '49DD317766015E7E4B7A71681B89A775',
+        'XSRF-TOKEN': '01d64644-c951-4ff0-aee5-3b3cb920b8cc',
     }
 }
+
+class MarkdownParser:
+
+    def __init__(self, file_path):
+        with open(file_path, encoding="utf-8") as f:
+            self.raw_content = f.read()
+        self.frontmatter = {}
+        self.main_content = self.raw_content
+        if self.raw_content.startswith("---"):
+            parts = self.raw_content.split("---", 2)
+            if len(parts) > 2:
+                fm_text = parts[1]
+                self.main_content = parts[2].lstrip("\n")
+                try:
+                    self.frontmatter = yaml.safe_load(fm_text)
+                except Exception as e:
+                    print(f"YAML frontmatter parse error: {e}")
+
+    def get_title(self):
+        return self.frontmatter.get("title")
+
+    def get_date(self):
+        return self.frontmatter.get("date")
+
+    def get_html(self):
+        return markdown.markdown(self.main_content)
 
 
 class RedakcjaGovPlClient:
@@ -59,6 +89,16 @@ class RedakcjaGovPlClient:
             json={"pages": [], "registers": [], "renderChildrenComponents": False, "isAccessPermited": False,
                   "type": type, "showInSiteMenu": True, "name": name,
                   "displayedPath": displayed_path}
+        ).json()
+
+    def post_page_move(self, page_id: str, order_number: int, parent_page_id):
+        return requests.post(
+            f'{self.base_url}/api/v2/pages/{page_id}/translations/pl_PL/move/{parent_page_id}/{order_number}',
+            headers={
+                'accept': 'application/json, text/plain, */*',
+                'x-xsrf-token': self.cookies['XSRF-TOKEN']
+            },
+            cookies=self.cookies
         ).json()
 
     def get_repo_folders(self, parent_folder_id: str):
@@ -159,6 +199,170 @@ class RedakcjaGovPlClient:
             cookies=self.cookies
         ).json()
 
+    def put_page_version(self, page_id: str, from_version: str, content: str, name: str, displayedPath: str):
+        request_body = {
+                "content": {
+                    "article": {
+                        "logos": [],
+                        "euBeneficiariesLogos": {
+                            "euFundsLogo": {
+                                "id": None,
+                                "alt": None
+                            },
+                            "euLogo": {
+                                "id": None,
+                                "alt": None
+                            },
+                            "customLogos": [],
+                            "logosUnderTitle": False
+                        },
+                        "photo": None,
+                        "position": None,
+                        "intro": None,
+                        "sections": [
+                            {
+                                "textSections": [
+                                    {
+                                        "title": "",
+                                        "textHtml": content,
+                                        "headerStyle": "DEFAULT",
+                                        "id": "0"
+                                    }
+                                ],
+                                "links": [],
+                                "youTubeLinkSections": []
+                            }
+                        ],
+                        "questionnaire": {
+                            "url": None
+                        },
+                        "event": {
+                            "location": None,
+                            "date": "2003-02-01T00:00:00",
+                            "expireDate": None,
+                            "eventDateStart": None,
+                            "eventDateEnd": None,
+                            "eventTimeStart": None,
+                            "eventTimeEnd": None,
+                            "addressFromFooter": False,
+                            "voivodeship": None,
+                            "city": None,
+                            "street": None,
+                            "description": None,
+                            "dateDescription": None,
+                            "locationDescription": None,
+                            "accreditation": False,
+                            "sendMessage": False,
+                            "journalistDescription": None,
+                            "transmissionCarsDescription": None,
+                            "accreditationData": None
+                        },
+                        "legalBasis": [],
+                        "gallery": [
+                        ],
+                        "status": {
+                            "name": None,
+                            "startDate": None,
+                            "endDate": None
+                        },
+                        "metrics": {
+                            "validUntilDate": None,
+                            "changesDone": None
+                        },
+                        "accordionAttribute": None,
+                        "showMetrics": False
+                    },
+                    "publicProcurement": None,
+                    "jobOffer": None,
+                    "document": None,
+                    "disclaimerEnabled": None,
+                    "serviceCard": None,
+                    "serviceCardCUS": None,
+                    "register": None,
+                    "card": None,
+                    "contactCard": None,
+                    "govCard": None,
+                    "competition": None,
+                    "globalSearch": False,
+                    "informationCard": None,
+                    "graphicGallery": None
+                },
+                "config": {
+                    "htmlHeadTitle": None,
+                    "headerTitle": None,
+                    "socialShareImage": None,
+                    "socialShareIntro": None,
+                    "showBreadcrumbs": True,
+                    "showMetrics": False,
+                    "showArticleChildrenLinks": True,
+                    "backgroundPhoto": None,
+                    "showNavigationMenu": None,
+                    "showReturnButton": True,
+                    "pageRedirectUrl": {
+                        "redirectUrl": None,
+                        "redirectUrlPageId": None
+                    },
+                    "menu": {
+                        "showChildrenPages": None,
+                        "showSiblingsPages": None
+                    },
+                    "sideMenuLinkId": None,
+                    "tags": None,
+                    "doNotShowLogos": False,
+                    "sections": [
+                        {
+                            "type": "PAGE_CONTENT",
+                            "sectionId": "aGJeSsaf6y",
+                            "title": None,
+                            "description": None,
+                            "content": None,
+                            "hideHeader": None,
+                            "hideSkipLink": None,
+                            "registerType": None
+                        }
+                    ],
+                    "delayedPublishDate": None,
+                    "delayedUnpublishDate": None,
+                    "sdgTag": False,
+                    "sdgContent": {
+                        "sdgLables": None,
+                        "sdgPolicyCodes": None
+                    },
+                    "govCard": {
+                        "group": None,
+                        "category": None,
+                        "siteIds": None,
+                        "electronicService": None
+                    },
+                    "pageRateSurvey": {
+                        "showSurvey": False,
+                        "hashedSurveyId": None
+                    },
+                    "metadata": {
+                        "register": {
+                            "columns": []
+                        }
+                    }
+                },
+                "type": "ARTICLE",
+                "displayedPath": displayedPath,
+                "bip": False,
+                "recommendedForMainSite": False,
+                "promotedOnRootPage": False,
+                "promotedOnRootPageG2": False,
+                "name": name,
+                "originator": None
+            }
+        return requests.put(
+            f'{self.base_url}/api/v2/page/{page_id}/version/{from_version}',
+            headers={
+                'accept': 'application/json, text/plain, */*',
+                'x-xsrf-token': self.cookies['XSRF-TOKEN']
+            },
+            cookies=self.cookies,
+            json=request_body
+        ).json()
+
     def get_page_version_history(self, page_id: str):
         return requests.get(
             f'{self.base_url}/api/v2/page/{page_id}/version-history',
@@ -217,7 +421,6 @@ class PagesRepository:
 
     def find_page_for_path(self, path):
         out = self.find_page(self.absolute_url_from_path(path))
-        print(f" For: {path}, found: {out}")
         return out
 
     def get_root_page(self):
@@ -262,6 +465,31 @@ class PagesRepository:
     def refresh(self):
         self.pages = self.client.get_pages()
 
+    def update_page(self, page_path):
+
+        page_content = MarkdownParser(os.path.join(TRANSFORMED_DIR, page_path))
+
+        page = self.find_page_for_path(page_path)
+        page_id = page['id']
+        page_versions = self.client.get_page_version_history(page_id)
+        last_version = page_versions[0]
+        last_version_path = str(last_version['version']['major'])+'/'+str(last_version['version']['minor'])
+        if last_version['state'] == 'SKETCH':
+            page_content = page_content.get_html()
+            page_title = page_content.get_title()
+            page_displayed_path = page['displayedPath'].strip('/')
+            response = self.client.put_page_version(
+                page_id, last_version_path, page_content, page_title, page_displayed_path
+            )
+            self.page_updates_logs.append({
+                'request': {
+                    'page_id': page_id,
+                    'last_version_path': last_version_path,
+                    'page_content': page_id,
+                    'page_displayed_path': page_displayed_path,
+                },
+                'response': response
+            })
 
 class Publisher:
 
@@ -306,13 +534,11 @@ class Publisher:
             self.images = json.load(f)
 
     def ensure_exists_page(self, file_path):
-        print(f"f Ensure: {file_path}")
         if not file_path:
             return self.pages_repository.get_root_page()
 
         page = self.pages_repository.find_page_for_path(file_path)
         if page:
-            print(f"  Exists: {page}")
             return page
 
         parent_path = os.path.dirname(file_path)
@@ -328,20 +554,53 @@ class Publisher:
         if os.path.isdir(os.path.join(TRANSFORMED_DIR, file_path)):
             type = 'UNIVERSAL_LIST'
         out = self.pages_repository.create_page(parent_page, file_path, type=type)
-        self.add_plan_step("Create page", out)
+        self.plan_content.append({'action': 'Create page', 'param': out})
         self.pages_repository.refresh()
         self.pages_repository.dump()
         return out
 
-    def execute(self):
-        self.pages_repository.refresh()
+    def walk_pages(self):
+        out = []
         for root, dirs, files in os.walk(TRANSFORMED_DIR):
+            dirs.sort()
+            files.sort()
             for file in files:
                 if file.endswith('.md'):
                     file_path = os.path.join(root, file)
-                    self.ensure_exists_page(os.path.relpath(file_path, TRANSFORMED_DIR))
+                    out.append(os.path.relpath(file_path, TRANSFORMED_DIR))
+        return out
+
+    def execute(self):
+        self.pages_repository.refresh()
+        for page_path in tqdm(self.walk_pages(), desc="Ensure exists"):
+            self.ensure_exists_page(page_path)
+
+        for page_path in tqdm(self.walk_pages(), desc="Update page"):
+            self.pages_repository.update_page(page_path)
         self.pages_repository.dump()
+        self.dump_logs_updte_pages()
         self.dump_plan()
+
+    def sort_pages(self):
+        self.pages_repository.refresh()
+        orders = []
+
+        def sort_recursive(pages):
+            sorted_pages = sorted(pages, key=lambda p: p.get("name", ""))
+            for idx, page in enumerate(sorted_pages):
+                orders.append((page["id"], idx, page["parentPageId"]))
+                if "pages" in page and isinstance(page["pages"], list):
+                    sort_recursive(page["pages"])
+            # Reorder in-memory pages list to match sorted order
+            pages[:] = sorted_pages
+
+        sort_recursive(self.pages_repository.pages)
+        for page_id, idx, parent_page_id in tqdm(orders):
+            try:
+                result = self.client.post_page_move(page_id, idx, parent_page_id)
+            except Exception as e:
+                print("Error: ", str(e))
+        self.pages_repository.dump()
 
     def create_workspace(self):
         # shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
@@ -364,13 +623,18 @@ class Publisher:
     def set_dry_run(self, dry_run=True):
         self.pages_repository.dry_run = dry_run
 
+    def dump_logs_updte_pages(self):
+        timestamp = int(time.time())
+        with open(os.path.join(OUTPUT_DIR, f"update_pages_{timestamp}.json"), "w", encoding="utf-8") as f:
+            json.dump(self.plan_content, f, indent=2)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Publisher CLI")
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["create_index", "plan", "apply", "test", "client"],
+        choices=["create_index", "plan", "apply", "apply", "sort_pages", "test", "client"],
         help="Command to run"
     )
 
@@ -399,6 +663,9 @@ if __name__ == "__main__":
     elif args.command == "apply":
         publisher.set_dry_run(False)
         publisher.execute()
+    elif args.command == "sort_pages":
+        publisher.set_dry_run(False)
+        publisher.sort_pages()
     elif args.command == "client":
         # Parse subcommands for client
         client_args = client_parser.parse_args(unknown)
