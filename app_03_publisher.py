@@ -7,7 +7,6 @@ import yaml
 
 import markdown
 import requests
-import requests
 import base64
 import mimetypes
 import json
@@ -15,7 +14,7 @@ import os
 
 from tqdm import tqdm
 
-from config import OUTPUT_DIR
+from config import OUTPUT_DIR, TRANSFORMED_ASSETS_DIR
 from config import TRANSFORMED_DIR
 
 config = {
@@ -26,12 +25,61 @@ config = {
         'attachments_root_id': 'a7b3e0cf-d9d7-4182-8898-beb7807528a5',
     },
     'cookies': {
-        'JSESSIONID': '49DD317766015E7E4B7A71681B89A775',
-        'XSRF-TOKEN': '01d64644-c951-4ff0-aee5-3b3cb920b8cc',
+        'JSESSIONID': 'BB5A28BA8EA8886AE92C8C9E64584792',
+        'XSRF-TOKEN': 'fcc09ca5-7624-4aa1-8760-0c48ba92068c',
     }
 }
 
-class MarkdownParser:
+def index_decorator(name):
+    def decorator(cls):
+        def load_from_file(self):
+            with open(os.path.join(OUTPUT_DIR, f"{name}.json"), "r", encoding="utf-8") as f:
+                self.index_content = json.load(f)
+
+        def dump(self):
+            timestamp = int(time.time())
+            with open(os.path.join(OUTPUT_DIR, f"{name}.json"), "w", encoding="utf-8") as f:
+                json.dump(self.index_content, f, indent=2)
+
+        def refresh(self):
+            pass
+
+        def ensure_index_loaded(self):
+            if not self.index_content:
+                self.refresh()
+
+        cls.load_from_file = load_from_file
+        cls.dump = dump
+        cls.index_content = []
+        if not cls.refresh:
+            cls.refresh = refresh
+
+        cls.ensure_index_loaded = ensure_index_loaded
+        return cls
+
+    return decorator
+
+def dumper_decorator(name: str, timestamp: bool = False):
+    def decorator(cls):
+        data_key = f'__dump_{name}_content'
+
+        def dump(self):
+            timestamp = int(time.time())
+            file_name = f"{name}.json" if not timestamp else f"{name}_{timestamp}.json"
+            with open(os.path.join(OUTPUT_DIR, file_name), "w", encoding="utf-8") as f:
+                json.dump(self.index_content, f, indent=2)
+
+        def add(self, value):
+            cls[data_key].append(value)
+
+        setattr(cls, data_key, [])
+        setattr(cls, f'add_{name}', add)
+        setattr(cls, f'dump_{name}', dump)
+        return cls
+
+    return decorator
+
+class PageContent:
 
     def __init__(self, file_path):
         with open(file_path, encoding="utf-8") as f:
@@ -57,6 +105,32 @@ class MarkdownParser:
     def get_html(self):
         return markdown.markdown(self.main_content)
 
+    def get_images(self):
+        out = {}
+        assets = self.frontmatter.get("assets", [])
+
+        for asset_url, asset_metas in assets.items():
+            asset_ext = os.path.splitext(asset_url)[1]
+            if asset_ext in ['.jpg','.jpe', '.jpeg', '.png', '.gif', '.svg', '.bmp', '.webp', '.ico']:
+                out[asset_url] = asset_metas
+        return out
+
+    def get_attachments(self):
+        out = {}
+        assets = self.frontmatter.get("assets", [])
+
+        for asset_url, asset_metas in assets.items():
+            asset_ext = os.path.splitext(asset_url)[1]
+            if asset_ext not in ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.bmp', '.webp', '.ico']:
+                out[asset_url] = asset_metas
+        return out
+
+class ApiResponseException(Exception):
+    def __init__(self, status_code, payload):
+        super().__init__(f"API returned status {status_code}: {payload}")
+        self.status_code = status_code
+        self.payload = payload
+
 
 class RedakcjaGovPlClient:
     base_url: str = 'https://redakcja.www.gov.pl'
@@ -68,18 +142,28 @@ class RedakcjaGovPlClient:
         self.site_id = site_id
         self.cookies = cookies
 
+    def _handle_response(self, response):
+        if response.status_code != 200:
+            try:
+                payload = response.json()
+            except Exception:
+                payload = response.text
+            raise ApiResponseException(response.status_code, payload)
+        return response.json()
+
     def get_pages(self):
-        return requests.get(
+        response = requests.get(
             f'{self.base_url}/api/v2/sites/{self.site_id}/pages?',
             headers={
                 'accept': 'application/json, text/plain, */*',
             },
             cookies=self.cookies
-        ).json()
+        )
+        return self._handle_response(response)
 
     def post_page(self, parent_page_id: str, type: str, name: str, displayed_path: str):
         displayed_path = displayed_path.removeprefix('/')
-        return requests.post(
+        response = requests.post(
             f'{self.base_url}/api/v2/sites/{self.site_id}/pages?parentPageId={parent_page_id}',
             headers={
                 'accept': 'application/json, text/plain, */*',
@@ -89,29 +173,32 @@ class RedakcjaGovPlClient:
             json={"pages": [], "registers": [], "renderChildrenComponents": False, "isAccessPermited": False,
                   "type": type, "showInSiteMenu": True, "name": name,
                   "displayedPath": displayed_path}
-        ).json()
+        )
+        return self._handle_response(response)
 
     def post_page_move(self, page_id: str, order_number: int, parent_page_id):
-        return requests.post(
+        response = requests.post(
             f'{self.base_url}/api/v2/pages/{page_id}/translations/pl_PL/move/{parent_page_id}/{order_number}',
             headers={
                 'accept': 'application/json, text/plain, */*',
                 'x-xsrf-token': self.cookies['XSRF-TOKEN']
             },
             cookies=self.cookies
-        ).json()
+        )
+        return self._handle_response(response)
 
     def get_repo_folders(self, parent_folder_id: str):
-        return requests.get(
+        response = requests.get(
             f'{self.base_url}/api/v2/repo/folders/{parent_folder_id}/content',
             headers={
                 'accept': 'application/json, text/plain, */*',
             },
             cookies=self.cookies
-        ).json()
+        )
+        return self._handle_response(response)
 
     def create_repo_folder(self, parent_folder_id: str, name: str):
-        return requests.post(
+        response = requests.post(
             f'{self.base_url}/api/v2/repo/folders/{parent_folder_id}',
             headers={
                 'accept': 'application/json, text/plain, */*',
@@ -123,10 +210,11 @@ class RedakcjaGovPlClient:
                 "name": name,
                 "hidden": False
             }
-        ).json()
+        )
+        return self._handle_response(response)
 
     def delete_repo_folder(self, folder_id: str):
-        return requests.delete(
+        response = requests.delete(
             f'{self.base_url}/api/v2/repo/folders/{folder_id}',
             headers={
                 'accept': 'application/json, text/plain, */*',
@@ -135,6 +223,13 @@ class RedakcjaGovPlClient:
             },
             cookies=self.cookies
         )
+        if response.status_code != 200:
+            try:
+                payload = response.json()
+            except Exception:
+                payload = response.text
+            raise ApiResponseException(response.status_code, payload)
+        return response
 
     def upload_image(self, folder_id, file_path, description):
         # Guess the mime type
@@ -187,173 +282,174 @@ class RedakcjaGovPlClient:
                 'x-xsrf-token': self.cookies['XSRF-TOKEN']
             }
         )
-        return response.json()
+        return self._handle_response(response)
 
     def put_page_sketch(self, page_id: str, from_version: str):
-        return requests.put(
+        response = requests.put(
             f'{self.base_url}/api/v2/page/{page_id}/from/version/{from_version}',
             headers={
                 'accept': 'application/json, text/plain, */*',
                 'x-xsrf-token': self.cookies['XSRF-TOKEN']
             },
             cookies=self.cookies
-        ).json()
+        )
+        return self._handle_response(response)
 
     def put_page_version(self, page_id: str, from_version: str, content: str, name: str, displayedPath: str):
         request_body = {
-                "content": {
-                    "article": {
-                        "logos": [],
-                        "euBeneficiariesLogos": {
-                            "euFundsLogo": {
-                                "id": None,
-                                "alt": None
-                            },
-                            "euLogo": {
-                                "id": None,
-                                "alt": None
-                            },
-                            "customLogos": [],
-                            "logosUnderTitle": False
+            "content": {
+                "article": {
+                    "logos": [],
+                    "euBeneficiariesLogos": {
+                        "euFundsLogo": {
+                            "id": None,
+                            "alt": None
                         },
-                        "photo": None,
-                        "position": None,
-                        "intro": None,
-                        "sections": [
-                            {
-                                "textSections": [
-                                    {
-                                        "title": "",
-                                        "textHtml": content,
-                                        "headerStyle": "DEFAULT",
-                                        "id": "0"
-                                    }
-                                ],
-                                "links": [],
-                                "youTubeLinkSections": []
-                            }
-                        ],
-                        "questionnaire": {
-                            "url": None
+                        "euLogo": {
+                            "id": None,
+                            "alt": None
                         },
-                        "event": {
-                            "location": None,
-                            "date": "2003-02-01T00:00:00",
-                            "expireDate": None,
-                            "eventDateStart": None,
-                            "eventDateEnd": None,
-                            "eventTimeStart": None,
-                            "eventTimeEnd": None,
-                            "addressFromFooter": False,
-                            "voivodeship": None,
-                            "city": None,
-                            "street": None,
-                            "description": None,
-                            "dateDescription": None,
-                            "locationDescription": None,
-                            "accreditation": False,
-                            "sendMessage": False,
-                            "journalistDescription": None,
-                            "transmissionCarsDescription": None,
-                            "accreditationData": None
-                        },
-                        "legalBasis": [],
-                        "gallery": [
-                        ],
-                        "status": {
-                            "name": None,
-                            "startDate": None,
-                            "endDate": None
-                        },
-                        "metrics": {
-                            "validUntilDate": None,
-                            "changesDone": None
-                        },
-                        "accordionAttribute": None,
-                        "showMetrics": False
+                        "customLogos": [],
+                        "logosUnderTitle": False
                     },
-                    "publicProcurement": None,
-                    "jobOffer": None,
-                    "document": None,
-                    "disclaimerEnabled": None,
-                    "serviceCard": None,
-                    "serviceCardCUS": None,
-                    "register": None,
-                    "card": None,
-                    "contactCard": None,
-                    "govCard": None,
-                    "competition": None,
-                    "globalSearch": False,
-                    "informationCard": None,
-                    "graphicGallery": None
-                },
-                "config": {
-                    "htmlHeadTitle": None,
-                    "headerTitle": None,
-                    "socialShareImage": None,
-                    "socialShareIntro": None,
-                    "showBreadcrumbs": True,
-                    "showMetrics": False,
-                    "showArticleChildrenLinks": True,
-                    "backgroundPhoto": None,
-                    "showNavigationMenu": None,
-                    "showReturnButton": True,
-                    "pageRedirectUrl": {
-                        "redirectUrl": None,
-                        "redirectUrlPageId": None
-                    },
-                    "menu": {
-                        "showChildrenPages": None,
-                        "showSiblingsPages": None
-                    },
-                    "sideMenuLinkId": None,
-                    "tags": None,
-                    "doNotShowLogos": False,
+                    "photo": None,
+                    "position": None,
+                    "intro": None,
                     "sections": [
                         {
-                            "type": "PAGE_CONTENT",
-                            "sectionId": "aGJeSsaf6y",
-                            "title": None,
-                            "description": None,
-                            "content": None,
-                            "hideHeader": None,
-                            "hideSkipLink": None,
-                            "registerType": None
+                            "textSections": [
+                                {
+                                    "title": "",
+                                    "textHtml": content,
+                                    "headerStyle": "DEFAULT",
+                                    "id": "0"
+                                }
+                            ],
+                            "links": [],
+                            "youTubeLinkSections": []
                         }
                     ],
-                    "delayedPublishDate": None,
-                    "delayedUnpublishDate": None,
-                    "sdgTag": False,
-                    "sdgContent": {
-                        "sdgLables": None,
-                        "sdgPolicyCodes": None
+                    "questionnaire": {
+                        "url": None
                     },
-                    "govCard": {
-                        "group": None,
-                        "category": None,
-                        "siteIds": None,
-                        "electronicService": None
+                    "event": {
+                        "location": None,
+                        "date": "2003-02-01T00:00:00",
+                        "expireDate": None,
+                        "eventDateStart": None,
+                        "eventDateEnd": None,
+                        "eventTimeStart": None,
+                        "eventTimeEnd": None,
+                        "addressFromFooter": False,
+                        "voivodeship": None,
+                        "city": None,
+                        "street": None,
+                        "description": None,
+                        "dateDescription": None,
+                        "locationDescription": None,
+                        "accreditation": False,
+                        "sendMessage": False,
+                        "journalistDescription": None,
+                        "transmissionCarsDescription": None,
+                        "accreditationData": None
                     },
-                    "pageRateSurvey": {
-                        "showSurvey": False,
-                        "hashedSurveyId": None
+                    "legalBasis": [],
+                    "gallery": [
+                    ],
+                    "status": {
+                        "name": None,
+                        "startDate": None,
+                        "endDate": None
                     },
-                    "metadata": {
-                        "register": {
-                            "columns": []
-                        }
-                    }
+                    "metrics": {
+                        "validUntilDate": None,
+                        "changesDone": None
+                    },
+                    "accordionAttribute": None,
+                    "showMetrics": False
                 },
-                "type": "ARTICLE",
-                "displayedPath": displayedPath,
-                "bip": False,
-                "recommendedForMainSite": False,
-                "promotedOnRootPage": False,
-                "promotedOnRootPageG2": False,
-                "name": name,
-                "originator": None
-            }
-        return requests.put(
+                "publicProcurement": None,
+                "jobOffer": None,
+                "document": None,
+                "disclaimerEnabled": None,
+                "serviceCard": None,
+                "serviceCardCUS": None,
+                "register": None,
+                "card": None,
+                "contactCard": None,
+                "govCard": None,
+                "competition": None,
+                "globalSearch": False,
+                "informationCard": None,
+                "graphicGallery": None
+            },
+            "config": {
+                "htmlHeadTitle": None,
+                "headerTitle": None,
+                "socialShareImage": None,
+                "socialShareIntro": None,
+                "showBreadcrumbs": True,
+                "showMetrics": False,
+                "showArticleChildrenLinks": True,
+                "backgroundPhoto": None,
+                "showNavigationMenu": None,
+                "showReturnButton": True,
+                "pageRedirectUrl": {
+                    "redirectUrl": None,
+                    "redirectUrlPageId": None
+                },
+                "menu": {
+                    "showChildrenPages": None,
+                    "showSiblingsPages": None
+                },
+                "sideMenuLinkId": None,
+                "tags": None,
+                "doNotShowLogos": False,
+                "sections": [
+                    {
+                        "type": "PAGE_CONTENT",
+                        "sectionId": "aGJeSsaf6y",
+                        "title": None,
+                        "description": None,
+                        "content": None,
+                        "hideHeader": None,
+                        "hideSkipLink": None,
+                        "registerType": None
+                    }
+                ],
+                "delayedPublishDate": None,
+                "delayedUnpublishDate": None,
+                "sdgTag": False,
+                "sdgContent": {
+                    "sdgLables": None,
+                    "sdgPolicyCodes": None
+                },
+                "govCard": {
+                    "group": None,
+                    "category": None,
+                    "siteIds": None,
+                    "electronicService": None
+                },
+                "pageRateSurvey": {
+                    "showSurvey": False,
+                    "hashedSurveyId": None
+                },
+                "metadata": {
+                    "register": {
+                        "columns": []
+                    }
+                }
+            },
+            "type": "ARTICLE",
+            "displayedPath": displayedPath,
+            "bip": False,
+            "recommendedForMainSite": False,
+            "promotedOnRootPage": False,
+            "promotedOnRootPageG2": False,
+            "name": name,
+            "originator": None
+        }
+        response = requests.put(
             f'{self.base_url}/api/v2/page/{page_id}/version/{from_version}',
             headers={
                 'accept': 'application/json, text/plain, */*',
@@ -361,10 +457,11 @@ class RedakcjaGovPlClient:
             },
             cookies=self.cookies,
             json=request_body
-        ).json()
+        )
+        return self._handle_response(response)
 
     def get_page_version_history(self, page_id: str):
-        return requests.get(
+        response = requests.get(
             f'{self.base_url}/api/v2/page/{page_id}/version-history',
             headers={
                 'accept': 'application/json, text/plain, */*',
@@ -372,27 +469,20 @@ class RedakcjaGovPlClient:
                 'x-xsrf-token': self.cookies['XSRF-TOKEN']
             },
             cookies=self.cookies
-        ).json()
+        )
+        return self._handle_response(response)
 
-
+@index_decorator("pages")
 class PagesRepository:
     dry_run = True
 
     def __init__(self):
         self.client = RedakcjaGovPlClient(config['site_id'], config['cookies'])
-        self.load_from_file()
+        self.page_updates_logs = []
 
-    def load_from_file(self):
-        with open(os.path.join(OUTPUT_DIR, "pages.json"), "r", encoding="utf-8") as f:
-            self.pages = json.load(f)
-
-    def dump(self):
-        timestamp = int(time.time())
-        with open(os.path.join(OUTPUT_DIR, f"pages.json"), "w", encoding="utf-8") as f:
-            json.dump(self.pages, f, indent=2)
-
-    def get_page_by_path(self, relative_path):
-        pass
+    def refresh(self):
+        self.index_content = self.client.get_pages()
+        self.dump()
 
     @staticmethod
     def nested_url_from_path(rel_path):
@@ -405,10 +495,11 @@ class PagesRepository:
         return url
 
     def find_page(self, path, pages=None):
+        self.ensure_index_loaded()
         if not path:
             return None
         if not pages:
-            pages = self.pages
+            pages = self.index_content
 
         for page in pages:
             if page.get("displayedPath") == '/' + path:
@@ -424,7 +515,7 @@ class PagesRepository:
         return out
 
     def get_root_page(self):
-        return self.pages[0]
+        return self.index_content[0]
 
     def page_name_from_url(self, path):
         path = os.path.splitext(os.path.basename(path))[0]
@@ -462,12 +553,9 @@ class PagesRepository:
 
         return out
 
-    def refresh(self):
-        self.pages = self.client.get_pages()
-
     def update_page(self, page_path):
 
-        page_content = MarkdownParser(os.path.join(TRANSFORMED_DIR, page_path))
+        page_content = PageContent(os.path.join(TRANSFORMED_DIR, page_path))
 
         page = self.find_page_for_path(page_path)
         page_id = page['id']
@@ -491,12 +579,14 @@ class PagesRepository:
                 'response': response
             })
 
-class Publisher:
 
-    def __init__(self):
+class ResourceRepository:
+
+    def __init__(self, root_folder_id, dry_run=True):
+        self.root_folder_id = root_folder_id
+        self.dry_run = dry_run
         self.client = RedakcjaGovPlClient(config['site_id'], config['cookies'])
-        self.pages_repository = PagesRepository()
-        self.plan_content = []
+        self.index_content = []
 
     def walk_repo_folder(self, folder_id):
         """
@@ -505,6 +595,7 @@ class Publisher:
 
         def _walk(fid):
             results = self.client.get_repo_folders(fid)['results']
+            nodes = []
             for result in results:
                 node = {
                     "folders": [],
@@ -516,22 +607,135 @@ class Publisher:
                     folder_node = dict(folder)
                     folder_node["children"] = child
                     node["folders"].append(folder_node)
-            return node
+                nodes.append(node)
+            return nodes
 
         return _walk(folder_id)
 
-    def refresh_repo_images(self):
-        pass
+    def find_folder_by_path(self, file_path, parent_folder=None):
+        self.ensure_index_loaded()
+        if not file_path:
+            return None
 
-    def refresh_repo_attachments(self):
-        pass
+        parts = os.path.normpath(file_path).split(os.sep)
+        root_folder = parts[0]
 
-    def load_index(self):
-        with open(os.path.join(OUTPUT_DIR, "attachments.json"), "r", encoding="utf-8") as f:
-            self.attachments = json.load(f)
+        if not parent_folder:
+            parent_folder = self.index_content[0]
 
-        with open(os.path.join(OUTPUT_DIR, "images.json"), "r", encoding="utf-8") as f:
-            self.images = json.load(f)
+        children_folders = []
+        if 'folders' in parent_folder:
+            children_folders = parent_folder['folders']
+        elif 'children' in parent_folder:
+            children_folders = parent_folder['children'][0]['folders']
+
+        for children_folder in children_folders:
+            if children_folder["name"] == root_folder:
+                if len(parts) == 1:
+                    return children_folder
+                return self.find_folder_by_path(os.sep.join(parts[1:]), children_folder)
+
+        return None
+
+    def get_asset_file_path(self, page_file_path, resource_path):
+        base_dir = os.path.dirname(page_file_path)
+        assets_path = os.path.normpath(os.path.join(base_dir, resource_path))
+        assets_transformed_path = os.path.join(TRANSFORMED_DIR, assets_path)
+        return os.path.relpath(assets_transformed_path, TRANSFORMED_ASSETS_DIR)
+
+    def ensure_folder(self, folder_path):
+        if not self.find_folder_by_path(folder_path):
+            parent_path = os.path.dirname(folder_path)
+            folder_name = os.path.basename(folder_path)
+            parent_folder = self.find_folder_by_path(parent_path)
+            if parent_folder:
+                parent_folder_id = parent_folder["id"]
+                print(f"Creating folder: {folder_path} with parent: {parent_folder['name']}")
+                self.client.create_repo_folder(parent_folder_id,folder_name)
+                self.refresh()
+                self.dump()
+            else:
+                self.ensure_folder(parent_path)
+        else:
+            print(f"Folder exists: {folder_path}")
+
+
+    def ensure_folders(self, assets):
+        for asset in assets:
+            folder_path = os.path.dirname(asset)
+            self.ensure_folder(folder_path)
+
+@index_decorator("images")
+class ImagesRepository(ResourceRepository):
+
+    def __init__(self):
+        super().__init__(config['repository']['images_root_id'])
+        self.content = None
+
+    def refresh(self):
+        self.index_content = super().walk_repo_folder(self.root_folder_id)
+        self.dump()
+
+
+@index_decorator("attachments")
+class AttachmentsRepository(ResourceRepository):
+
+    def __init__(self):
+        super().__init__(config['repository']['attachments_root_id'])
+        self.content = None
+
+    def refresh(self):
+        self.index_content = super().walk_repo_folder(self.root_folder_id)
+        self.dump()
+
+
+class LocalAssetsRepository:
+
+    def __init__(self, pages_repository: PagesRepository, images_repository: ImagesRepository, attachments_repository: AttachmentsRepository):
+        self.pages_repository = pages_repository
+        self.images_repository = images_repository
+        self.attachments_repository = attachments_repository
+
+    def walk_pages(self):
+        out = []
+        for root, dirs, files in os.walk(TRANSFORMED_DIR):
+            dirs.sort()
+            files.sort()
+            for file in files:
+                if file.endswith('.md'):
+                    file_path = os.path.join(root, file)
+                    out.append(os.path.relpath(file_path, TRANSFORMED_DIR))
+        return out
+
+    def parsing_pages(self) -> list[tuple[str, PageContent]]:
+        out = []
+        for page_path in tqdm(self.walk_pages(), desc="Parsing local pages"):
+            page_content = PageContent(os.path.join(TRANSFORMED_DIR, page_path))
+            out.append((page_path, page_content))
+        return out
+
+@dumper_decorator('add_images')
+class Publisher:
+
+    def __init__(self):
+        self.client = RedakcjaGovPlClient(config['site_id'], config['cookies'])
+        self.pages_repository = PagesRepository()
+        self.images_repository = ImagesRepository()
+        self.attachments_repository = AttachmentsRepository()
+        self.local_resources_repository = LocalAssetsRepository(
+            self.pages_repository,
+            self.images_repository,
+            self.attachments_repository
+        )
+        self.plan_content = []
+
+    def refresh(self):
+        print("Refresh pages index")
+        self.pages_repository.refresh()
+        print("Refresh images index")
+        self.images_repository.refresh()
+        print("Refresh attachment index")
+        self.attachments_repository.refresh()
 
     def ensure_exists_page(self, file_path):
         if not file_path:
@@ -559,27 +763,47 @@ class Publisher:
         self.pages_repository.dump()
         return out
 
-    def walk_pages(self):
+    def extract_images(self, parsed_local_pages):
         out = []
-        for root, dirs, files in os.walk(TRANSFORMED_DIR):
-            dirs.sort()
-            files.sort()
-            for file in files:
-                if file.endswith('.md'):
-                    file_path = os.path.join(root, file)
-                    out.append(os.path.relpath(file_path, TRANSFORMED_DIR))
+        for page_path, page_content in tqdm(parsed_local_pages, desc="Extracting images"):
+            assets = page_content.get_images()
+            for asset_path, asset_metas in assets.items():
+                asset_path = self.images_repository.get_asset_file_path(page_path, asset_path)
+                out.append(asset_path)
         return out
 
-    def execute(self):
-        self.pages_repository.refresh()
-        for page_path in tqdm(self.walk_pages(), desc="Ensure exists"):
-            self.ensure_exists_page(page_path)
+    def extract_attachments(self, parsed_local_pages):
+        out = []
+        for page_path, page_content in tqdm(parsed_local_pages, desc="Extracting attachments"):
+            assets = page_content.get_attachments()
+            for asset_path, asset_metas in assets.items():
+                asset_path = self.attachments_repository.get_asset_file_path(page_path, asset_path)
+                out.append(asset_path)
+        return out
 
-        for page_path in tqdm(self.walk_pages(), desc="Update page"):
-            self.pages_repository.update_page(page_path)
-        self.pages_repository.dump()
-        self.dump_logs_updte_pages()
-        self.dump_plan()
+
+    def execute(self):
+        # self.refresh()
+        # for page_path in tqdm(self.local_resources_repository.walk_pages(), desc="Ensure page exists"):
+        #     self.ensure_exists_page(page_path)
+
+        parsed_local_pages = self.local_resources_repository.parsing_pages()
+
+        images = self.extract_images(parsed_local_pages)
+        self.images_repository.ensure_folders(images)
+        attachments = self.extract_attachments(parsed_local_pages)
+        self.images_repository.ensure_folders(attachments)
+
+        print('Done')
+        #
+        # for page_path, page_content in tqdm(parsed_local_pages, desc="Ensure attachments exists"):
+        #     self.ensure_exists_attachment(page_path)
+        #
+        # for page_path, page_content in tqdm(parsed_local_pages, desc="Update page"):
+        #     self.pages_repository.update_page(page_path)
+        # self.pages_repository.dump()
+        # self.dump_logs_updte_pages()
+        # self.dump_plan()
 
     def sort_pages(self):
         self.pages_repository.refresh()
@@ -622,6 +846,8 @@ class Publisher:
 
     def set_dry_run(self, dry_run=True):
         self.pages_repository.dry_run = dry_run
+        self.images_repository.dry_run = dry_run
+        self.attachments_repository.dry_run = dry_run
 
     def dump_logs_updte_pages(self):
         timestamp = int(time.time())
@@ -634,7 +860,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["create_index", "plan", "apply", "apply", "sort_pages", "test", "client"],
+        choices=["refresh", "plan", "apply", "apply", "sort_pages", "test", "client"],
         help="Command to run"
     )
 
@@ -655,8 +881,8 @@ if __name__ == "__main__":
 
     if args.command == "test":
         publisher.test()
-    elif args.command == "create_index":
-        publisher.create_index()
+    elif args.command == "refresh":
+        publisher.refresh()
     elif args.command == "plan":
         publisher.set_dry_run(True)
         publisher.execute()
