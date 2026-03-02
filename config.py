@@ -145,5 +145,7 @@ BROKEN_LINKS_MAP = {
     '../wp-content/': 'https://zspzd-technikum.pl/wp-content/'
 }
 
+PUBLISHER_IMAGES_EXT = ['.jpg', '.jpe', '.jpeg', '.png', '.gif', '.svg', '.bmp', '.webp', '.ico']
+
 FIXED_DIR = os.path.join(BUILD_DIR, "transformed-fixed")
 OUTPUT_DIR = os.path.join(BUILD_DIR, "output")

@@ -1,4 +1,5 @@
 import argparse
+import math
 import re
 import shutil
 import time
@@ -11,6 +12,9 @@ import base64
 import mimetypes
 import json
 import os
+import dataclasses
+
+from PIL import Image
 
 from tqdm import tqdm
 
@@ -25,19 +29,24 @@ config = {
         'attachments_root_id': 'a7b3e0cf-d9d7-4182-8898-beb7807528a5',
     },
     'cookies': {
-        'JSESSIONID': 'BB5A28BA8EA8886AE92C8C9E64584792',
-        'XSRF-TOKEN': 'fcc09ca5-7624-4aa1-8760-0c48ba92068c',
+        'JSESSIONID': '0C917E91151C175F2981E5F9F16BE42D',
+        'XSRF-TOKEN': '77784cc2-dd0c-4e38-89a9-3c7f0adf0c44',
     }
 }
 
+
 def index_decorator(name):
+    timestamp = int(time.time())
+
     def decorator(cls):
         def load_from_file(self):
-            with open(os.path.join(OUTPUT_DIR, f"{name}.json"), "r", encoding="utf-8") as f:
-                self.index_content = json.load(f)
+            try:
+                with open(os.path.join(OUTPUT_DIR, f"{name}.json"), "r", encoding="utf-8") as f:
+                    self.index_content = json.load(f)
+            except Exception as e:
+                self.index_content = []
 
         def dump(self):
-            timestamp = int(time.time())
             with open(os.path.join(OUTPUT_DIR, f"{name}.json"), "w", encoding="utf-8") as f:
                 json.dump(self.index_content, f, indent=2)
 
@@ -46,7 +55,8 @@ def index_decorator(name):
 
         def ensure_index_loaded(self):
             if not self.index_content:
-                self.refresh()
+                print(f"Loading index from file: {name}.json")
+                self.load_from_file()
 
         cls.load_from_file = load_from_file
         cls.dump = dump
@@ -59,18 +69,20 @@ def index_decorator(name):
 
     return decorator
 
+
 def dumper_decorator(name: str, timestamp: bool = False):
+    timestamp = int(time.time())
+
     def decorator(cls):
         data_key = f'__dump_{name}_content'
 
         def dump(self):
-            timestamp = int(time.time())
             file_name = f"{name}.json" if not timestamp else f"{name}_{timestamp}.json"
             with open(os.path.join(OUTPUT_DIR, file_name), "w", encoding="utf-8") as f:
-                json.dump(self.index_content, f, indent=2)
+                json.dump(getattr(cls, data_key), f, indent=2)
 
         def add(self, value):
-            cls[data_key].append(value)
+            getattr(cls, data_key).append(value)
 
         setattr(cls, data_key, [])
         setattr(cls, f'add_{name}', add)
@@ -79,11 +91,24 @@ def dumper_decorator(name: str, timestamp: bool = False):
 
     return decorator
 
+@dataclasses.dataclass
+class Asset:
+    url: str
+    metas: list[str]
+    ext: str
+    rel_path: str
+    page_title: str
+
+    def get_description(self):
+        return self.page_title
+
 class PageContent:
 
     def __init__(self, file_path):
         with open(file_path, encoding="utf-8") as f:
             self.raw_content = f.read()
+
+        self.file_path = file_path
         self.frontmatter = {}
         self.main_content = self.raw_content
         if self.raw_content.startswith("---"):
@@ -105,25 +130,41 @@ class PageContent:
     def get_html(self):
         return markdown.markdown(self.main_content)
 
-    def get_images(self):
-        out = {}
+    def get_asset_file_path(self, page_file_path, resource_path):
+        base_dir = os.path.dirname(page_file_path)
+        assets_path = os.path.normpath(os.path.join(base_dir, resource_path))
+        return os.path.relpath(assets_path, TRANSFORMED_ASSETS_DIR)
+
+    def extract_assets(self):
+        out = []
         assets = self.frontmatter.get("assets", [])
 
         for asset_url, asset_metas in assets.items():
-            asset_ext = os.path.splitext(asset_url)[1]
-            if asset_ext in ['.jpg','.jpe', '.jpeg', '.png', '.gif', '.svg', '.bmp', '.webp', '.ico']:
-                out[asset_url] = asset_metas
+            out.append(Asset(
+                url=asset_url,
+                metas=asset_metas,
+                ext=os.path.splitext(asset_url)[1],
+                rel_path=self.get_asset_file_path(self.file_path, asset_url),
+                page_title=self.get_title()
+            ))
+
         return out
+
+    def get_images(self):
+        out = []
+        for asset in self.extract_assets():
+            if asset.ext in ['.jpg', '.jpe', '.jpeg', '.png', '.gif', '.svg', '.bmp', '.webp', '.ico']:
+                out.append(asset)
+        return out
+
 
     def get_attachments(self):
-        out = {}
-        assets = self.frontmatter.get("assets", [])
-
-        for asset_url, asset_metas in assets.items():
-            asset_ext = os.path.splitext(asset_url)[1]
-            if asset_ext not in ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.bmp', '.webp', '.ico']:
-                out[asset_url] = asset_metas
+        out = []
+        for asset in self.extract_assets():
+            if asset.ext not in ['.jpg', '.jpe', '.jpeg', '.png', '.gif', '.svg', '.bmp', '.webp', '.ico']:
+                out.append(asset)
         return out
+
 
 class ApiResponseException(Exception):
     def __init__(self, status_code, payload):
@@ -187,15 +228,29 @@ class RedakcjaGovPlClient:
         )
         return self._handle_response(response)
 
-    def get_repo_folders(self, parent_folder_id: str):
+    def get_repo_folders_page(self, parent_folder_id: str, page = None):
+        if not page:
+            page = 1
+
         response = requests.get(
-            f'{self.base_url}/api/v2/repo/folders/{parent_folder_id}/content',
+            f'{self.base_url}/api/v2/repo/folders/{parent_folder_id}/content?query=&name=&sort=createDate,desc&page={page}&size=100&deep=false&extension=',
             headers={
                 'accept': 'application/json, text/plain, */*',
             },
             cookies=self.cookies
         )
         return self._handle_response(response)
+
+    def get_repo_folders(self, parent_folder_id: str):
+        first_page = self.get_repo_folders_page(parent_folder_id)
+        total = int(first_page['total'])
+        pages = math.ceil(total / 100)
+        for page in range(2, pages + 1):
+            n_page = self.get_repo_folders_page(parent_folder_id, page)
+            first_page['results'][0]['folders'].extend(n_page['results'][0]['folders'])
+            first_page['results'][0]['files'].extend(n_page['results'][0]['files'])
+
+        return first_page
 
     def create_repo_folder(self, parent_folder_id: str, name: str):
         response = requests.post(
@@ -237,6 +292,11 @@ class RedakcjaGovPlClient:
         if not mime_type:
             mime_type = 'application/octet-stream'
 
+        width = 64
+        height = 64
+        with Image.open(file_path) as img:
+            width, height = img.size
+
         # Read and encode file
         with open(file_path, 'rb') as f:
             file_bytes = f.read()
@@ -246,8 +306,8 @@ class RedakcjaGovPlClient:
         metadata = {
             "folderId": folder_id,
             "hidden": False,
-            "width": 64,  # Set actual width if needed
-            "height": 64,  # Set actual height if needed
+            "width": width,  # Set actual width if needed
+            "height": height,  # Set actual height if needed
             "activeFormat": None,
             "fileContent": {
                 "lastModified": 1771624425167,
@@ -472,6 +532,7 @@ class RedakcjaGovPlClient:
         )
         return self._handle_response(response)
 
+
 @index_decorator("pages")
 class PagesRepository:
     dry_run = True
@@ -561,7 +622,7 @@ class PagesRepository:
         page_id = page['id']
         page_versions = self.client.get_page_version_history(page_id)
         last_version = page_versions[0]
-        last_version_path = str(last_version['version']['major'])+'/'+str(last_version['version']['minor'])
+        last_version_path = str(last_version['version']['major']) + '/' + str(last_version['version']['minor'])
         if last_version['state'] == 'SKETCH':
             page_content = page_content.get_html()
             page_title = page_content.get_title()
@@ -587,33 +648,33 @@ class ResourceRepository:
         self.dry_run = dry_run
         self.client = RedakcjaGovPlClient(config['site_id'], config['cookies'])
         self.index_content = []
+        self.ensure_index_loaded()
 
     def walk_repo_folder(self, folder_id):
         """
         Recursively walk through repo folders and build a tree with folders and files.
         """
 
-        def _walk(fid):
-            results = self.client.get_repo_folders(fid)['results']
-            nodes = []
-            for result in results:
-                node = {
-                    "folders": [],
-                    "files": result.get("files", []),
-                    "leadingPath": result.get("leadingPath", [])
-                }
-                for folder in result.get("folders", []):
-                    child = _walk(folder["id"])
-                    folder_node = dict(folder)
-                    folder_node["children"] = child
-                    node["folders"].append(folder_node)
-                nodes.append(node)
-            return nodes
+        def _walk(parent_folder_id, parent_folder_node):
+            result = self.client.get_repo_folders(parent_folder_id)['results'][0]
+            for folder in result.get("folders", []):
+                folder_id = folder["id"]
+                folder_name = folder["name"]
 
-        return _walk(folder_id)
+                folder_node = {"id": folder_id, "parentId": parent_folder_id, "name": folder_name, "folders": []}
+                parent_folder_node["folders"].append(folder_node)
+                _walk(folder["id"], folder_node)
+
+            parent_folder_node['files'] = result["files"]
+
+            return parent_folder_node
+
+        return _walk(folder_id, {"id": folder_id, "parentId": None, "name": None, "folders": []})
+
+    def get_root_folder(self):
+        return self.index_content
 
     def find_folder_by_path(self, file_path, parent_folder=None):
-        self.ensure_index_loaded()
         if not file_path:
             return None
 
@@ -621,13 +682,9 @@ class ResourceRepository:
         root_folder = parts[0]
 
         if not parent_folder:
-            parent_folder = self.index_content[0]
+            parent_folder = self.get_root_folder()
 
-        children_folders = []
-        if 'folders' in parent_folder:
-            children_folders = parent_folder['folders']
-        elif 'children' in parent_folder:
-            children_folders = parent_folder['children'][0]['folders']
+        children_folders = parent_folder['folders']
 
         for children_folder in children_folders:
             if children_folder["name"] == root_folder:
@@ -637,35 +694,65 @@ class ResourceRepository:
 
         return None
 
-    def get_asset_file_path(self, page_file_path, resource_path):
-        base_dir = os.path.dirname(page_file_path)
-        assets_path = os.path.normpath(os.path.join(base_dir, resource_path))
-        assets_transformed_path = os.path.join(TRANSFORMED_DIR, assets_path)
-        return os.path.relpath(assets_transformed_path, TRANSFORMED_ASSETS_DIR)
+    def find_file_by_path(self, file_path, parent_folder=None):
+        if not file_path:
+            return None
+        file_folder = os.path.dirname(file_path)
+        folder = self.find_folder_by_path(file_folder)
+        if not folder:
+            raise f'File folder does not exist for file: {file_path}'
+
+        for file in folder['files']:
+            if file['name'] == os.path.basename(file_path):
+                return file
+        return None
+
+
 
     def ensure_folder(self, folder_path):
+        if folder_path in ['', '/', '.']:
+            return
+
         if not self.find_folder_by_path(folder_path):
             parent_path = os.path.dirname(folder_path)
             folder_name = os.path.basename(folder_path)
-            parent_folder = self.find_folder_by_path(parent_path)
+            if parent_path == '':
+                parent_folder = self.get_root_folder()
+            else:
+                parent_folder = self.find_folder_by_path(parent_path)
+
             if parent_folder:
                 parent_folder_id = parent_folder["id"]
-                print(f"Creating folder: {folder_path} with parent: {parent_folder['name']}")
-                self.client.create_repo_folder(parent_folder_id,folder_name)
-                self.refresh()
+                print(
+                    f"Creating folder: {folder_path} with parent: {parent_folder['name']} for repo: {self.root_folder_id}")
+                new_folder = self.client.create_repo_folder(parent_folder_id, folder_name)
+                parent_folder['folders'].append({
+                    "name": folder_name,
+                    "id": new_folder["id"],
+                    "parentId": parent_folder_id,
+                    "folders": [],
+                    "files": []
+                })
                 self.dump()
             else:
                 self.ensure_folder(parent_path)
-        else:
-            print(f"Folder exists: {folder_path}")
-
+        # else:
+        #     print(f"Folder already exists: {folder_path} in repo: {self.root_folder_id}")
 
     def ensure_folders(self, assets):
-        for asset in assets:
-            folder_path = os.path.dirname(asset)
+        folders = set()
+        for asset_rel_path, asset_path, asset_metas, page_content in assets:
+            folder_path = os.path.dirname(asset_rel_path)
+            parts = os.path.normpath(folder_path).split(os.sep)
+            for i in range(1, len(parts) + 1):
+                folder = os.path.join(*parts[:i])
+                folders.add(folder)
+
+        for folder_path in tqdm(folders, desc="Ensure folders"):
             self.ensure_folder(folder_path)
 
-@index_decorator("images")
+
+@index_decorator("repo-images")
 class ImagesRepository(ResourceRepository):
 
     def __init__(self):
@@ -677,7 +764,7 @@ class ImagesRepository(ResourceRepository):
         self.dump()
 
 
-@index_decorator("attachments")
+@index_decorator("repo-attachments")
 class AttachmentsRepository(ResourceRepository):
 
     def __init__(self):
@@ -691,7 +778,8 @@ class AttachmentsRepository(ResourceRepository):
 
 class LocalAssetsRepository:
 
-    def __init__(self, pages_repository: PagesRepository, images_repository: ImagesRepository, attachments_repository: AttachmentsRepository):
+    def __init__(self, pages_repository: PagesRepository, images_repository: ImagesRepository,
+                 attachments_repository: AttachmentsRepository):
         self.pages_repository = pages_repository
         self.images_repository = images_repository
         self.attachments_repository = attachments_repository
@@ -714,7 +802,8 @@ class LocalAssetsRepository:
             out.append((page_path, page_content))
         return out
 
-@dumper_decorator('add_images')
+
+@dumper_decorator('publishing')
 class Publisher:
 
     def __init__(self):
@@ -767,37 +856,63 @@ class Publisher:
         out = []
         for page_path, page_content in tqdm(parsed_local_pages, desc="Extracting images"):
             assets = page_content.get_images()
-            for asset_path, asset_metas in assets.items():
-                asset_path = self.images_repository.get_asset_file_path(page_path, asset_path)
-                out.append(asset_path)
+            for asset in assets:
+                out.append(asset)
         return out
 
     def extract_attachments(self, parsed_local_pages):
         out = []
         for page_path, page_content in tqdm(parsed_local_pages, desc="Extracting attachments"):
             assets = page_content.get_attachments()
-            for asset_path, asset_metas in assets.items():
-                asset_path = self.attachments_repository.get_asset_file_path(page_path, asset_path)
-                out.append(asset_path)
+            out.append(assets)
         return out
+
+    def upload_images(self, images):
+        exists = []
+        not_exists: list[Asset] = []
+        visited = set([])
+        for asset in tqdm(images, desc="Upload images"):
+            if asset.rel_path in visited:
+                continue
+
+            repo_asset = self.images_repository.find_file_by_path(asset.rel_path)
+            if repo_asset:
+                exists.append(repo_asset)
+                visited.add(asset.rel_path)
+                continue
+
+            repo_parent_folder = self.images_repository.find_folder_by_path(os.path.dirname(asset.rel_path))
+            if not repo_parent_folder:
+                raise f'Parent folder not found for asset: {asset}'
+
+            not_exists.append((repo_parent_folder['id'], asset))
+            visited.add(asset.rel_path)
+
+        print(f'Exsists: {len(exists)}, Not exists: {len(not_exists)}')
+
+        for parent_folder_id, not_exist_asset in tqdm(not_exists, desc="Uploading images"):
+            file_path = os.path.join(TRANSFORMED_ASSETS_DIR, not_exist_asset.rel_path)
+            try:
+                self.client.upload_image(parent_folder_id, file_path, not_exist_asset.get_description())
+            except Exception as e:
+                self.add_publishing(('image upload error', file_path, str(e)))
+                self.dump_publishing()
 
 
     def execute(self):
-        # self.refresh()
-        # for page_path in tqdm(self.local_resources_repository.walk_pages(), desc="Ensure page exists"):
-        #     self.ensure_exists_page(page_path)
+        self.refresh()
+        for page_path in tqdm(self.local_resources_repository.walk_pages(), desc="Ensure page exists"):
+            self.ensure_exists_page(page_path)
 
         parsed_local_pages = self.local_resources_repository.parsing_pages()
 
         images = self.extract_images(parsed_local_pages)
-        self.images_repository.ensure_folders(images)
-        attachments = self.extract_attachments(parsed_local_pages)
-        self.images_repository.ensure_folders(attachments)
-
-        print('Done')
+        # self.images_repository.ensure_folders(images)
+        self.upload_images(images)
         #
-        # for page_path, page_content in tqdm(parsed_local_pages, desc="Ensure attachments exists"):
-        #     self.ensure_exists_attachment(page_path)
+        # attachments = self.extract_attachments(parsed_local_pages)
+        # self.attachments_repository.ensure_folders(attachments)
+
         #
         # for page_path, page_content in tqdm(parsed_local_pages, desc="Update page"):
         #     self.pages_repository.update_page(page_path)
@@ -834,7 +949,8 @@ class Publisher:
         # print(client.get_pages())
         # print(client.upload_image('741141c9-dc7f-4e8c-a4c4-883b496cd02a', 'faviconV3.png', 'test'))
         # print(client.put_page_sketch('21382036','2/0'))
-        print(self.client.get_page_version_history('21382036'))
+        # print(self.client.get_page_version_history('21382036'))
+        print('Repo paginate folder: ', len(self.client.get_repo_folders('54ca33f1-2931-4beb-b40d-0d978b3735dd')))
 
     def add_plan_step(self, param, out):
         self.plan_content.append({'action': param, 'param': out})
