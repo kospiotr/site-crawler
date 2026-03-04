@@ -1,4 +1,5 @@
 import argparse
+from datetime import datetime
 import math
 import re
 import shutil
@@ -29,8 +30,8 @@ config = {
         'attachments_root_id': 'a7b3e0cf-d9d7-4182-8898-beb7807528a5',
     },
     'cookies': {
-        'JSESSIONID': '0C917E91151C175F2981E5F9F16BE42D',
-        'XSRF-TOKEN': '77784cc2-dd0c-4e38-89a9-3c7f0adf0c44',
+        'JSESSIONID': 'B74FCA57BB554B1486C76EF982C72915',
+        'XSRF-TOKEN': '54889aff-c412-4738-8e7e-9de589e940ee',
     }
 }
 
@@ -91,16 +92,25 @@ def dumper_decorator(name: str, timestamp: bool = False):
 
     return decorator
 
+
 @dataclasses.dataclass
 class Asset:
     url: str
     metas: list[str]
-    ext: str
     rel_path: str
     page_title: str
 
-    def get_description(self):
-        return self.page_title
+    def get_title(self):
+        if self.is_image():
+            return self.page_title
+        return self.metas.get('text', self.page_title)
+
+    def get_ext(self):
+        return os.path.splitext(self.url)[1]
+
+    def is_image(self):
+        return self.get_ext() in ['.jpg', '.jpe', '.jpeg', '.png', '.gif', '.svg', '.bmp', '.webp', '.ico']
+
 
 class PageContent:
 
@@ -127,6 +137,12 @@ class PageContent:
     def get_date(self):
         return self.frontmatter.get("date")
 
+    def get_date_ddMMyyy(self):
+        try:
+            return datetime.strptime(self.get_date(), '%Y-%m-%d').strftime('%Y-%m-%dT%H:%M:%S')
+        except:
+            return None
+
     def get_html(self):
         return markdown.markdown(self.main_content)
 
@@ -143,7 +159,6 @@ class PageContent:
             out.append(Asset(
                 url=asset_url,
                 metas=asset_metas,
-                ext=os.path.splitext(asset_url)[1],
                 rel_path=self.get_asset_file_path(self.file_path, asset_url),
                 page_title=self.get_title()
             ))
@@ -153,15 +168,14 @@ class PageContent:
     def get_images(self):
         out = []
         for asset in self.extract_assets():
-            if asset.ext in ['.jpg', '.jpe', '.jpeg', '.png', '.gif', '.svg', '.bmp', '.webp', '.ico']:
+            if asset.is_image():
                 out.append(asset)
         return out
-
 
     def get_attachments(self):
         out = []
         for asset in self.extract_assets():
-            if asset.ext not in ['.jpg', '.jpe', '.jpeg', '.png', '.gif', '.svg', '.bmp', '.webp', '.ico']:
+            if not asset.is_image():
                 out.append(asset)
         return out
 
@@ -228,7 +242,7 @@ class RedakcjaGovPlClient:
         )
         return self._handle_response(response)
 
-    def get_repo_folders_page(self, parent_folder_id: str, page = None):
+    def get_repo_folders_page(self, parent_folder_id: str, page=None):
         if not page:
             page = 1
 
@@ -344,6 +358,43 @@ class RedakcjaGovPlClient:
         )
         return self._handle_response(response)
 
+    def upload_attachment(self, folder_id, file_path, title):
+        # Guess the mime type
+        mime_type, _ = mimetypes.guess_type(file_path)
+        if not mime_type:
+            mime_type = 'application/octet-stream'
+
+        # Read and encode file
+        with open(file_path, 'rb') as f:
+            file_bytes = f.read()
+            encoded = base64.b64encode(file_bytes).decode('utf-8')
+
+        # Prepare metadata
+        metadata = {
+            "folderId": folder_id,
+            "format": os.path.splitext(file_path)[1].upper(),
+            "hidden": False,
+            "name": os.path.basename(file_path),
+            "title": title,
+        }
+
+        # Prepare multipart form data
+        files = {
+            "file": (os.path.basename(file_path), file_bytes, mime_type),
+            "metadata": ("metadata.json", json.dumps(metadata), "application/json")
+        }
+
+        response = requests.post(
+            f"{self.base_url}/api/v2/repo/attachments/",
+            files=files,
+            cookies=self.cookies,
+            headers={
+                'accept': 'application/json, text/plain, */*',
+                'x-xsrf-token': self.cookies['XSRF-TOKEN']
+            }
+        )
+        return self._handle_response(response)
+
     def put_page_sketch(self, page_id: str, from_version: str):
         response = requests.put(
             f'{self.base_url}/api/v2/page/{page_id}/from/version/{from_version}',
@@ -355,7 +406,14 @@ class RedakcjaGovPlClient:
         )
         return self._handle_response(response)
 
-    def put_page_version(self, page_id: str, from_version: str, content: str, name: str, displayedPath: str):
+    def put_page_version(self, page_id: str, from_version: str, content: str, name: str, displayedPath: str,
+                         date: str = None, gallery: list = [], links: list = []):
+
+        photo = None
+        if len(gallery) > 0:
+            first_image = gallery[0]
+            photo = first_image
+
         request_body = {
             "content": {
                 "article": {
@@ -372,7 +430,7 @@ class RedakcjaGovPlClient:
                         "customLogos": [],
                         "logosUnderTitle": False
                     },
-                    "photo": None,
+                    "photo": photo,
                     "position": None,
                     "intro": None,
                     "sections": [
@@ -385,7 +443,7 @@ class RedakcjaGovPlClient:
                                     "id": "0"
                                 }
                             ],
-                            "links": [],
+                            "links": links,
                             "youTubeLinkSections": []
                         }
                     ],
@@ -394,7 +452,7 @@ class RedakcjaGovPlClient:
                     },
                     "event": {
                         "location": None,
-                        "date": "2003-02-01T00:00:00",
+                        "date": date,
                         "expireDate": None,
                         "eventDateStart": None,
                         "eventDateEnd": None,
@@ -414,8 +472,7 @@ class RedakcjaGovPlClient:
                         "accreditationData": None
                     },
                     "legalBasis": [],
-                    "gallery": [
-                    ],
+                    "gallery": gallery,
                     "status": {
                         "name": None,
                         "startDate": None,
@@ -614,32 +671,6 @@ class PagesRepository:
 
         return out
 
-    def update_page(self, page_path):
-
-        page_content = PageContent(os.path.join(TRANSFORMED_DIR, page_path))
-
-        page = self.find_page_for_path(page_path)
-        page_id = page['id']
-        page_versions = self.client.get_page_version_history(page_id)
-        last_version = page_versions[0]
-        last_version_path = str(last_version['version']['major']) + '/' + str(last_version['version']['minor'])
-        if last_version['state'] == 'SKETCH':
-            page_content = page_content.get_html()
-            page_title = page_content.get_title()
-            page_displayed_path = page['displayedPath'].strip('/')
-            response = self.client.put_page_version(
-                page_id, last_version_path, page_content, page_title, page_displayed_path
-            )
-            self.page_updates_logs.append({
-                'request': {
-                    'page_id': page_id,
-                    'last_version_path': last_version_path,
-                    'page_content': page_id,
-                    'page_displayed_path': page_displayed_path,
-                },
-                'response': response
-            })
-
 
 class ResourceRepository:
 
@@ -706,8 +737,6 @@ class ResourceRepository:
             if file['name'] == os.path.basename(file_path):
                 return file
         return None
-
-
 
     def ensure_folder(self, folder_path):
         if folder_path in ['', '/', '.']:
@@ -852,6 +881,85 @@ class Publisher:
         self.pages_repository.dump()
         return out
 
+    def gallery(self, images: list[Asset]):
+        out = []
+
+        for asset in images:
+
+            remote_image = self.images_repository.find_file_by_path(asset.rel_path)
+            if not remote_image:
+                continue
+
+            out.append({
+                'description': remote_image['description'],
+                'mainPhoto': {
+                    'id': remote_image['id'],
+                    'alt': remote_image['description']
+                },
+                'alt': remote_image['description'],
+                'id': remote_image['id'],
+                'panoramicPhoto': None,
+                'squarePhoto': None
+            })
+        return out
+
+    def links(self, attachments: list[Asset]):
+        out = []
+        for asset in attachments:
+
+            remote_image = self.attachments_repository.find_file_by_path(asset.rel_path)
+            if not remote_image:
+                continue
+
+            out.append({
+                'attachment': {
+                    'id': remote_image['id'],
+                    'name': remote_image['name'],
+                    'size': remote_image['size']
+                },
+                'description': None,
+                'displayedIconId': None,
+                'endDate': None,
+                'icon': None,
+                'isCollapsed': True,
+                'logo': None,
+                'page': {'pageId': None, 'title': None},
+                'pageId': None,
+                'startDate': None,
+                'subtitle': None,
+                'supportingInfo': None,
+                'title': asset.get_title(),
+                'type': "ATTACHMENT",
+                'url': None,
+                'urlParams': []
+            })
+        return out
+
+    def update_page(self, page_path):
+
+        page_content = PageContent(os.path.join(TRANSFORMED_DIR, page_path))
+
+        page = self.pages_repository.find_page_for_path(page_path)
+        page_id = page['id']
+        page_versions = self.client.get_page_version_history(page_id)
+        last_version = page_versions[0]
+        last_version_path = str(last_version['version']['major']) + '/' + str(last_version['version']['minor'])
+        if last_version['state'] == 'SKETCH':
+            title = page_content.get_title().replace('…', '').replace('∕', '/').replace(' ',' ').replace('>',' ')
+            html = page_content.get_html()
+            date = page_content.get_date_ddMMyyy()
+            page_displayed_path = page['displayedPath'].strip('/')
+            gallery = self.gallery(page_content.get_images())
+            links = self.links(page_content.get_attachments())
+            try:
+                response = self.client.put_page_version(
+                    page_id, last_version_path, html, title, page_displayed_path,
+                    date=date, gallery=gallery, links=links
+                )
+            except Exception as e:
+                self.add_publishing(('update page error', page_path, str(e)))
+                self.dump_publishing()
+
     def extract_images(self, parsed_local_pages):
         out = []
         for page_path, page_content in tqdm(parsed_local_pages, desc="Extracting images"):
@@ -864,14 +972,15 @@ class Publisher:
         out = []
         for page_path, page_content in tqdm(parsed_local_pages, desc="Extracting attachments"):
             assets = page_content.get_attachments()
-            out.append(assets)
+            for asset in assets:
+                out.append(asset)
         return out
 
     def upload_images(self, images):
         exists = []
         not_exists: list[Asset] = []
         visited = set([])
-        for asset in tqdm(images, desc="Upload images"):
+        for asset in tqdm(images, desc="Collecting images to upload"):
             if asset.rel_path in visited:
                 continue
 
@@ -893,14 +1002,48 @@ class Publisher:
         for parent_folder_id, not_exist_asset in tqdm(not_exists, desc="Uploading images"):
             file_path = os.path.join(TRANSFORMED_ASSETS_DIR, not_exist_asset.rel_path)
             try:
-                self.client.upload_image(parent_folder_id, file_path, not_exist_asset.get_description())
+                self.client.upload_image(parent_folder_id, file_path, not_exist_asset.get_title())
             except Exception as e:
                 self.add_publishing(('image upload error', file_path, str(e)))
                 self.dump_publishing()
 
+    def upload_attachments(self, attachments):
+        exists = []
+        not_exists: list[Asset] = []
+        visited = set([])
+        for asset in tqdm(attachments, desc="Collecting attachments to upload"):
+            if asset.rel_path in visited:
+                continue
+
+            repo_asset = self.attachments_repository.find_file_by_path(asset.rel_path)
+            if repo_asset:
+                exists.append(repo_asset)
+                visited.add(asset.rel_path)
+                continue
+
+            repo_parent_folder = self.attachments_repository.find_folder_by_path(os.path.dirname(asset.rel_path))
+            if not repo_parent_folder:
+                raise f'Parent folder not found for asset: {asset}'
+
+            not_exists.append((repo_parent_folder['id'], asset))
+            visited.add(asset.rel_path)
+
+        print(f'Exsists: {len(exists)}, Not exists: {len(not_exists)}')
+
+        for parent_folder_id, not_exist_asset in tqdm(not_exists, desc="Uploading attachments"):
+            file_path = os.path.join(TRANSFORMED_ASSETS_DIR, not_exist_asset.rel_path)
+            try:
+                title = not_exist_asset.metas['text']
+                if title is None or title == '':
+                    raise f'File {file_path} title is empty'
+
+                self.client.upload_attachment(parent_folder_id, file_path, not_exist_asset.get_title())
+            except Exception as e:
+                self.add_publishing(('attachment upload error', file_path, str(e)))
+                self.dump_publishing()
 
     def execute(self):
-        self.refresh()
+        # self.refresh()
         for page_path in tqdm(self.local_resources_repository.walk_pages(), desc="Ensure page exists"):
             self.ensure_exists_page(page_path)
 
@@ -908,17 +1051,16 @@ class Publisher:
 
         images = self.extract_images(parsed_local_pages)
         # self.images_repository.ensure_folders(images)
-        self.upload_images(images)
+        # self.upload_images(images)
         #
-        # attachments = self.extract_attachments(parsed_local_pages)
+        attachments = self.extract_attachments(parsed_local_pages)
         # self.attachments_repository.ensure_folders(attachments)
-
+        # self.upload_attachments(attachments)
         #
-        # for page_path, page_content in tqdm(parsed_local_pages, desc="Update page"):
-        #     self.pages_repository.update_page(page_path)
-        # self.pages_repository.dump()
-        # self.dump_logs_updte_pages()
-        # self.dump_plan()
+        for page_path, page_content in tqdm(parsed_local_pages, desc="Update page"):
+            self.update_page(page_path)
+
+        self.dump_publishing()
 
     def sort_pages(self):
         self.pages_repository.refresh()
@@ -950,7 +1092,13 @@ class Publisher:
         # print(client.upload_image('741141c9-dc7f-4e8c-a4c4-883b496cd02a', 'faviconV3.png', 'test'))
         # print(client.put_page_sketch('21382036','2/0'))
         # print(self.client.get_page_version_history('21382036'))
-        print('Repo paginate folder: ', len(self.client.get_repo_folders('54ca33f1-2931-4beb-b40d-0d978b3735dd')))
+        print('Repo paginate folder: ',
+              len(self.client.get_repo_folders('a01fc04056bc01fb832de37fd203b309d098e0a6a63d501398e8bbc0882e5bba')))
+        # self.client.upload_attachment(
+        #     '26a9b278-e8c9-4216-9c2b-431c00f8726b',
+        #     os.path.join(TRANSFORMED_ASSETS_DIR, 'aktualnosci', '2022', '01', 'a01fc04056bc01fb832de37fd203b309d098e0a6a63d501398e8bbc0882e5bba.docx'),
+        #     'Harmonogram egzaminów – Sesja styczeń-luty 2022'
+        # )
 
     def add_plan_step(self, param, out):
         self.plan_content.append({'action': param, 'param': out})

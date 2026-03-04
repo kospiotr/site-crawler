@@ -1,7 +1,8 @@
 import os
 
 BUILD_DIR = "build"
-IMPORTER_START_URL = "https://zspzd-technikum.pl"
+IMPORTER_DOMAIN = "zspzd-technikum.pl"
+IMPORTER_START_URL = f"https://{IMPORTER_DOMAIN}"
 INPUT_DIR = "input"
 INPUT_ASSETS_DIR = "assets"
 INPUT_ASSETS_PATH = os.path.join(BUILD_DIR, INPUT_DIR, INPUT_ASSETS_DIR)

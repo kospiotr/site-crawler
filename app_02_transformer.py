@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from config import INPUT_DIR, INPUT_ASSETS_PATH, INPUT_SITE_MAP_CSV, INPUT_ASSETS_MAP_CSV, \
     TRANSFORMED_IGNORED_ELEMENT_SELECTORS, BROKEN_LINKS_MAP, TRANSFORMED_IGNORED_URLS, TRANSFORMED_REMAP_URLS, \
-    TRANSFORMED_DIR, TRANSFORMED_ASSETS_DIR, IMPORTER_START_URL, TRANSFORMER_TITLE_ADJUSTER, \
+    TRANSFORMED_DIR, TRANSFORMED_ASSETS_DIR, IMPORTER_DOMAIN, IMPORTER_START_URL, TRANSFORMER_TITLE_ADJUSTER, \
     TRANSFORMED_BROKEN_LINKS_CSV, FIXED_DIR
 from app_01_importer import Sitemap
 
@@ -84,12 +84,12 @@ class Transformer:
 
     def convert_links_and_assets(self, soup, current_md_path):
         # Convert <a> and <img> and other asset links to local
-        assets = {}
-        for tag in soup.find_all(["a", "img", "audio", "video", "source"]):
+
+        def process_tag(tag, assets, to_decompose):
             attr = "href" if tag.name == "a" else "src"
             link = tag.get(attr)
             if not link:
-                continue
+                return
             # Fix broken links using BROKEN_LINKS_MAP
             link = self.fix_broken_link(link)
             # Convert page links
@@ -109,25 +109,39 @@ class Transformer:
                 if os.path.exists(src):
                     shutil.copy2(src, dst_abs_path)
                     tag[attr] = rel_path
-                    asset = assets[rel_path] = {
-                        'tag': tag.name
-                    }
-                    alt = tag.get('alt', None)
-                    if alt and alt != '':
-                        asset['alt'] = alt
+                    asset = assets.get(rel_path, {
+                        'tag': tag.name,
+                        'attribute': attr,
+                        'alt':  tag.get('alt', ''),
+                        'title': tag.get('title', ''),
+                        'href': tag.get('href', ''),
+                        'text': tag.get_text(strip=True)
+                    })
 
-                    title = tag.get('title', None)
-                    if title and title != '':
-                        asset['title'] = title
+                    text = tag.get_text(strip=True)
+                    if asset.get('text') != text and text != '':
+                        asset['text'] = asset['text'] + ' ' + text
 
-                    href = tag.get('href', None)
-                    if href and href != '':
-                        asset['href'] = href
+                    assets[rel_path] = asset
 
-                else:
-                    tag.attrs.pop(attr, None)
-            else:
-                tag.attrs.pop(attr, None)
+            if IMPORTER_DOMAIN in link:
+                to_decompose.append(tag)
+
+        assets = {}
+        to_decompose = []
+
+        for tag in soup.find_all(["a"]):
+            process_tag(tag, assets, to_decompose)
+
+        for tag in to_decompose:
+            tag.decompose()
+
+        to_decompose = []
+        for tag in soup.find_all(["img", "audio", "video", "source"]):
+            process_tag(tag, assets, to_decompose)
+
+        for tag in to_decompose:
+            tag.decompose()
 
         return soup, assets
 
